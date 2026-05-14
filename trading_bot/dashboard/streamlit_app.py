@@ -155,18 +155,19 @@ with tab_portfolio:
     c3.metric("Total value", f"${state.total_value:,.2f}")
     c4.metric("Daily P/L", f"${state.daily_pnl:,.2f}")
     with session_scope() as db:
-        snaps = list(
-            db.scalars(
+        snaps = [
+            (s.timestamp, s.total_value)
+            for s in db.scalars(
                 select(PortfolioSnapshot).order_by(
                     PortfolioSnapshot.timestamp.asc()
                 ).limit(500)
             )
-        )
+        ]
     if snaps:
         st.line_chart(
             pd.DataFrame(
-                {"timestamp": [s.timestamp for s in snaps],
-                 "total_value": [s.total_value for s in snaps]}
+                {"timestamp": [t for t, _ in snaps],
+                 "total_value": [v for _, v in snaps]}
             ).set_index("timestamp")
         )
 
@@ -216,6 +217,8 @@ with tab_perf:
                 .order_by(PaperTrade.closed_at.desc())
             )
         )
+        for r in closed:
+            db.expunge(r)
     if not closed:
         st.info("No closed trades yet.")
     else:
@@ -240,6 +243,8 @@ with tab_logs:
                 select(DecisionLog).order_by(DecisionLog.timestamp.desc()).limit(500)
             )
         )
+        for r in logs:
+            db.expunge(r)
     if logs:
         df = pd.DataFrame([
             {"time": l.timestamp, "action": l.action, "decision": l.decision,
@@ -259,6 +264,10 @@ with tab_sources:
                 select(HighImpactAccount).order_by(HighImpactAccount.credibility.desc())
             )
         )
+        for r in srcs:
+            db.expunge(r)
+        for r in accounts:
+            db.expunge(r)
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**News sources**")
