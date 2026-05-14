@@ -13,10 +13,10 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
-from ..app import TradingBotApp
-from ..config import get_settings
-from ..storage.database import init_db, session_scope
-from ..storage.models import (
+from trading_bot.app import TradingBotApp
+from trading_bot.config import get_settings
+from trading_bot.storage.database import init_db, session_scope
+from trading_bot.storage.models import (
     DecisionLog,
     HighImpactAccount,
     NormalizedEvent,
@@ -25,8 +25,8 @@ from ..storage.models import (
     PortfolioSnapshot,
     Source,
 )
-from ..trading.paper_broker import PaperBroker
-from ..trading.portfolio import Portfolio
+from trading_bot.trading.paper_broker import PaperBroker
+from trading_bot.trading.portfolio import Portfolio
 
 
 st.set_page_config(page_title="Trading Bot — MVP", layout="wide")
