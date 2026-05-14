@@ -1,0 +1,14 @@
+SQLAlchemy>=2.0
+python-dotenv>=1.0
+feedparser>=6.0
+requests>=2.31
+pydantic>=2.5
+streamlit>=1.32
+pandas>=2.1
+numpy>=1.26
+yfinance>=0.2.40
+tweepy>=4.14
+praw>=7.7
+pytest>=8.0
+rich>=13.7
+APScheduler>=3.10

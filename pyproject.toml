@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-bot-mvp"
+version = "0.1.0"
+description = "Trading intelligence bot MVP — paper trading only."
+requires-python = ">=3.10"
+dependencies = [
+  "SQLAlchemy>=2.0",
+  "python-dotenv>=1.0",
+  "feedparser>=6.0",
+  "requests>=2.31",
+  "pydantic>=2.5",
+  "streamlit>=1.32",
+  "pandas>=2.1",
+  "numpy>=1.26",
+  "yfinance>=0.2.40",
+  "tweepy>=4.14",
+  "praw>=7.7",
+  "APScheduler>=3.10",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["trading_bot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["trading_bot/tests"]
