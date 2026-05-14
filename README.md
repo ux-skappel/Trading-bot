@@ -90,6 +90,7 @@ README.md
    cd Trading-bot
    python -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
+   pip install -e .
    ```
 
 2. **Configure environment:**

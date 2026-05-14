@@ -7,7 +7,13 @@ Run with:
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import pandas as pd
 import streamlit as st
