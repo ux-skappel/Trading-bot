@@ -107,6 +107,12 @@ class Settings:
     use_trailing_stop: bool = True
     trailing_stop_pct: float = 0.04
 
+    # --- Support / resistance ---
+    sr_window: int = 5                  # bars on each side to confirm a swing high/low
+    sr_max_levels: int = 3              # levels kept per side
+    max_stop_loss_pct: float = 0.10     # ignore supports further away than this
+    min_reward_risk: float = 1.5        # buy is downgraded to watch below this
+
     # --- Watchlists ---
     stock_watchlist: List[str] = field(
         default_factory=lambda: [

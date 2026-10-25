@@ -29,6 +29,13 @@ crypto assets, ranks opportunities with a transparent 0–100 score, and
   rumor flagging, official-account override.
 - **Transparent scorer** — 10 weighted factors, every contribution is
   recorded and visible in the dashboard.
+- **Support & resistance** — every symbol the bot looks at gets automatic
+  levels from 6 months of daily candles (clustered swing highs/lows, ranked
+  by touches and recency). Stops go just below support, targets just below
+  resistance, and a buy is downgraded to *watch* when reward/risk is below
+  `min_reward_risk` (default 1.5). Shown as a chart per symbol in the
+  dashboard; you can also upload your own CSV (Nordnet-style `;` and decimal
+  commas work).
 - **Paper broker** — entry / stop loss / take profit / trailing stop /
   exit reason / PnL.
 - **Risk manager** — position size cap, daily loss cap, max open positions,
@@ -59,6 +66,7 @@ trading_bot/
     sentiment.py
     event_classifier.py
     high_impact.py        # politicians/regulators/CEOs etc.
+    support_resistance.py # automatic S/R levels + stop/target from levels
     opportunity_scoring.py
   trading/
     broker_base.py
@@ -71,6 +79,7 @@ trading_bot/
     models.py
   dashboard/
     streamlit_app.py
+    sr_chart.py           # candlestick chart with S/R lines
   backtesting/
     backtest.py
   data/
@@ -120,12 +129,20 @@ README.md
    python -m trading_bot.main approve 7 --approver=ux
    ```
 
-7. **Run the tests:**
+7. **Support/resistance levels in the terminal:**
+   ```bash
+   python -m trading_bot.main levels AAPL EQNR.OL BTC   # chosen symbols
+   python -m trading_bot.main levels                    # whole watchlist
+   python -m trading_bot.main levels --csv my_chart.csv # your own data
+   ```
+   Or open the **Support/Resistance** tab in the dashboard.
+
+8. **Run the tests:**
    ```bash
    pytest -q
    ```
 
-8. **Backtest with the bundled sample data:**
+9. **Backtest with the bundled sample data:**
    ```bash
    python -m trading_bot.main backtest \
      --events trading_bot/data/sample_events.csv \

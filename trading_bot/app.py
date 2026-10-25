@@ -18,6 +18,7 @@ from .analysis.high_impact import (
 )
 from .analysis.opportunity_scoring import ScoringInputs, score_opportunity
 from .analysis.sentiment import is_rumor, score_sentiment
+from .analysis.support_resistance import detect_levels
 from .config import get_settings
 from .connectors.base import IngestedItem
 from .connectors.market_data import MarketDataProvider
@@ -184,6 +185,13 @@ class TradingBotApp:
             independent_sources = len({e[0].source_domain or e[0].source for e in evidence})
             duplicate_confirmations = max(0, independent_sources - 1)
             quote = self.market_data.get_quote(symbol, asset_class)
+            history = self.market_data.get_history(symbol, asset_class)
+            levels = detect_levels(
+                history.bars,
+                symbol=symbol,
+                window=self.settings.sr_window,
+                max_levels=self.settings.sr_max_levels,
+            ) if history.bars else None
             in_universe = (
                 symbol in self.settings.stock_watchlist
                 if asset_class == "stock"
@@ -202,6 +210,7 @@ class TradingBotApp:
                 is_in_universe=in_universe,
                 is_blacklisted=symbol in self.settings.blacklist,
                 is_rumor=ne.is_rumor,
+                levels=levels,
             )
             scored = score_opportunity(scoring)
             # Prepend high-impact reasoning if present

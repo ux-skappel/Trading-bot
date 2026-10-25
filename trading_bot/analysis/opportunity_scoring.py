@@ -16,6 +16,7 @@ from ..config import get_settings
 from ..connectors.market_data import Quote
 from .event_classifier import EventLabel
 from .high_impact import HighImpactClassification
+from .support_resistance import SupportResistance, suggest_stop_take
 
 
 @dataclass
@@ -53,6 +54,7 @@ class ScoringInputs:
     is_in_universe: bool
     is_blacklisted: bool
     is_rumor: bool
+    levels: Optional[SupportResistance] = None
 
 
 def _recency_score(ts: datetime, now: Optional[datetime] = None) -> float:
@@ -228,7 +230,29 @@ def score_opportunity(inp: ScoringInputs) -> ScoredOpportunity:
     entry = inp.quote.price if inp.quote else None
     stop = None
     take = None
-    if entry:
+    if entry and bias >= 0 and inp.levels is not None:
+        targets = suggest_stop_take(
+            inp.levels,
+            entry,
+            default_stop_pct=settings.default_stop_loss_pct,
+            default_take_pct=settings.default_take_profit_pct,
+            max_stop_pct=settings.max_stop_loss_pct,
+        )
+        stop, take = targets.stop_loss, targets.take_profit
+        reasoning.append("Levels: " + inp.levels.summary())
+        reasoning.extend(targets.notes)
+        if (
+            direction == "buy"
+            and targets.reward_risk is not None
+            and targets.reward_risk < settings.min_reward_risk
+        ):
+            direction = "watch"
+            reasoning.append(
+                f"Override: reward/risk {targets.reward_risk:.2f} below "
+                f"{settings.min_reward_risk:.2f} — too close to resistance; "
+                "wait for a breakout or a pullback to support."
+            )
+    elif entry:
         if bias >= 0:
             stop = round(entry * (1 - settings.default_stop_loss_pct), 4)
             take = round(entry * (1 + settings.default_take_profit_pct), 4)

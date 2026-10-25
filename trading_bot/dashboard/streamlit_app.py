@@ -19,8 +19,11 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
+from trading_bot.analysis.support_resistance import bars_from_csv_text, detect_levels
 from trading_bot.app import TradingBotApp
 from trading_bot.config import get_settings
+from trading_bot.connectors.market_data import MarketDataProvider, infer_asset_class
+from trading_bot.dashboard.sr_chart import levels_frame, sr_chart
 from trading_bot.storage.database import init_db, session_scope
 from trading_bot.storage.models import (
     DecisionLog,
@@ -47,6 +50,40 @@ def _df(rows) -> pd.DataFrame:
         d = {c.name: getattr(r, c.name) for c in r.__table__.columns}
         out.append(d)
     return pd.DataFrame(out)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _levels_for_symbol(symbol: str):
+    """Fetch daily history for a symbol and detect its levels (cached 5 min)."""
+    history = MarketDataProvider(settings.market_data_provider).get_history(
+        symbol, infer_asset_class(symbol)
+    )
+    sr = detect_levels(history.bars, symbol=symbol,
+                       window=settings.sr_window, max_levels=settings.sr_max_levels)
+    return history.bars, sr, history.source
+
+
+LEVEL_TABLE_CONFIG = {
+    "distance_pct": st.column_config.NumberColumn("distance", format="%+.2f%%"),
+    "last_touch": st.column_config.DateColumn("last touch", format="YYYY-MM-DD"),
+    "label": None,
+}
+
+
+def _theme() -> str:
+    """Active light/dark theme (older Streamlit versions don't expose it)."""
+    theme = getattr(getattr(st, "context", None), "theme", None)
+    return getattr(theme, "type", None) or "light"
+
+
+def _show_levels(bars, sr, caption: str) -> None:
+    if len(bars) < 2:
+        st.warning("Not enough price data to find levels.")
+        return
+    st.altair_chart(sr_chart(bars, sr, theme=_theme()), use_container_width=True)
+    st.caption(f"{sr.summary()} · {caption} · tolerance {sr.tolerance_pct:.1%}")
+    st.dataframe(levels_frame(sr), column_config=LEVEL_TABLE_CONFIG,
+                 hide_index=True, use_container_width=True)
 
 
 st.title("Trading Bot — MVP (paper trading)")
@@ -77,12 +114,75 @@ with col_msg:
     st.write(st.session_state.get("last_result", "Press 'Run scan now' to ingest fresh data."))
 
 # Tabs
-tab_news, tab_opps, tab_portfolio, tab_positions, tab_perf, tab_logs, tab_sources, tab_watch, tab_config = (
-    st.tabs([
-        "News", "Opportunities", "Portfolio", "Open positions", "Performance",
-        "Decisions", "Sources", "Watchlists", "Config",
-    ])
-)
+(tab_news, tab_opps, tab_levels, tab_portfolio, tab_positions, tab_perf,
+ tab_logs, tab_sources, tab_watch, tab_config) = st.tabs([
+    "News", "Opportunities", "Support/Resistance", "Portfolio", "Open positions",
+    "Performance", "Decisions", "Sources", "Watchlists", "Config",
+])
+
+with tab_levels:
+    st.subheader("Support & resistance")
+    st.caption(
+        "Levels are clustered swing highs/lows from daily candles, ranked by touches "
+        "and recency. The bot places stops just below support and targets just below "
+        "resistance, and downgrades a buy to watch when reward/risk is too low."
+    )
+    with session_scope() as db:
+        opp_symbols = sorted(db.scalars(select(OpportunityScore.symbol).distinct()))
+    all_symbols = list(dict.fromkeys(
+        settings.stock_watchlist + settings.crypto_watchlist + opp_symbols
+    ))
+
+    choice = st.selectbox("Symbol", all_symbols)
+    with st.spinner(f"Loading {choice}..."):
+        bars, sr, source = _levels_for_symbol(choice)
+    _show_levels(bars, sr, f"data: {source}, {len(bars)} daily bars")
+
+    st.divider()
+    if st.toggle(f"Show levels for all {len(all_symbols)} symbols"):
+        def _px(value):
+            return None if value is None else round(value, 2 if value >= 1 else 6)
+
+        overview = []
+        progress = st.progress(0.0)
+        for i, sym in enumerate(all_symbols, start=1):
+            _, s_r, src = _levels_for_symbol(sym)
+            sup, res = s_r.nearest_support, s_r.nearest_resistance
+            overview.append({
+                "symbol": sym,
+                "price": _px(s_r.current_price),
+                "support": _px(sup.price) if sup else None,
+                "to support": sup.distance_pct * 100 if sup else None,
+                "resistance": _px(res.price) if res else None,
+                "to resistance": res.distance_pct * 100 if res else None,
+                "data": src,
+            })
+            progress.progress(i / len(all_symbols))
+        progress.empty()
+        st.dataframe(
+            pd.DataFrame(overview),
+            column_config={
+                "to support": st.column_config.NumberColumn(format="%+.2f%%"),
+                "to resistance": st.column_config.NumberColumn(format="%+.2f%%"),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.divider()
+    uploaded = st.file_uploader(
+        "Your own chart data (CSV with date + close, optionally open/high/low/volume)",
+        type=["csv", "txt"],
+    )
+    if uploaded is not None:
+        try:
+            up_bars = bars_from_csv_text(uploaded.getvalue().decode("utf-8-sig"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            st.error(f"Could not read {uploaded.name}: {exc}")
+        else:
+            up_sr = detect_levels(up_bars, symbol=uploaded.name,
+                                  window=settings.sr_window, max_levels=settings.sr_max_levels)
+            _show_levels(up_bars, up_sr, f"{len(up_bars)} rows from {uploaded.name}")
 
 with tab_news:
     st.subheader("Latest detected news (normalized)")

@@ -5,18 +5,23 @@ Usage:
     python -m trading_bot.main loop --every 300   # repeat every 300s
     python -m trading_bot.main approve <trade_id>
     python -m trading_bot.main backtest --events events.csv --prices prices.csv
+    python -m trading_bot.main levels AAPL BTC     # support/resistance
+    python -m trading_bot.main levels --csv chart.csv
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 
+from .analysis.support_resistance import SupportResistance, bars_from_csv_text, detect_levels
 from .app import TradingBotApp
 from .backtesting.backtest import run_backtest
 from .config import get_settings
+from .connectors.market_data import MarketDataProvider, infer_asset_class
 from .trading.paper_broker import PaperBroker
 
 logger = logging.getLogger(__name__)
@@ -92,6 +97,40 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_levels(sr: SupportResistance, source: str, n_bars: int) -> None:
+    print(
+        f"\n{sr.symbol}  price {sr.current_price:.4f}  "
+        f"({source}, {n_bars} bars, tolerance {sr.tolerance_pct:.1%})"
+    )
+    if not sr.supports and not sr.resistances:
+        print("  (not enough data to find levels)")
+        return
+    for lv in sorted(sr.resistances, key=lambda lv: lv.price, reverse=True):
+        print(f"  RESISTANCE {lv.price:>12.4f}  {lv.distance_pct:+7.1%}  touches {lv.touches}  strength {lv.strength:.2f}")
+    print(f"  -- price -- {sr.current_price:>12.4f}")
+    for lv in sr.supports:
+        print(f"  SUPPORT    {lv.price:>12.4f}  {lv.distance_pct:+7.1%}  touches {lv.touches}  strength {lv.strength:.2f}")
+
+
+def cmd_levels(args: argparse.Namespace) -> int:
+    s = get_settings()
+    if args.csv:
+        with open(args.csv, encoding="utf-8-sig") as f:
+            bars = bars_from_csv_text(f.read())
+        sr = detect_levels(bars, symbol=os.path.basename(args.csv),
+                           window=s.sr_window, max_levels=s.sr_max_levels)
+        _print_levels(sr, "csv", len(bars))
+        return 0
+
+    market_data = MarketDataProvider(s.market_data_provider)
+    for symbol in args.symbols or (s.stock_watchlist + s.crypto_watchlist):
+        history = market_data.get_history(symbol, infer_asset_class(symbol))
+        sr = detect_levels(history.bars, symbol=symbol,
+                           window=s.sr_window, max_levels=s.sr_max_levels)
+        _print_levels(sr, history.source, len(history.bars))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="trading_bot")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -112,6 +151,11 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--prices", required=True)
     bt.add_argument("--horizon", type=int, default=5)
     bt.set_defaults(func=cmd_backtest)
+
+    lv = sub.add_parser("levels", help="support/resistance (default: whole watchlist)")
+    lv.add_argument("symbols", nargs="*")
+    lv.add_argument("--csv", help="OHLC or close-only CSV file")
+    lv.set_defaults(func=cmd_levels)
 
     return p
 
