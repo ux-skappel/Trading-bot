@@ -144,6 +144,34 @@ def test_partial_position_size():
     assert s.symbol == "TSLA" and s.size_scale == pytest.approx(0.25)
 
 
+@pytest.mark.parametrize("words,confidence", [
+    ("Bruker 10X giring og SL på $95", "normal"),
+    ("På support. Bruker 10X giring", "normal"),
+    ("Risky! Bruker 10X giring", "risky"),
+    ("Liten posisjon her. 10X", "risky"),
+    ("Risky og ikke stor posisjon. 10X", "risky"),
+    ("⚠️ 10X giring", "risky"),
+    ("Veldig risky men ser mega bra ut. 10X", "very_risky"),
+    ("Risky ⚠️⚠️ 10X", "very_risky"),
+    ("Ren gamble denne. 10X", "very_risky"),
+    ("Klink support på $95. 10X", "strong"),
+    ("Ser mega bra ut! 10X", "strong"),
+    ("Liker risk-rewarden her nede! 10X", "strong"),
+    ("Oversolgt og på support! 10X", "strong"),
+    ("På support og oversolgt! 10X", "strong"),
+    ("Ikke så risky som sist. 10X", "normal"),
+    ("Ser ikke bra ut, men tar en sjanse. 10X", "normal"),
+])
+def test_his_tone_sets_the_confidence(words, confidence):
+    s = parse_signal(f"SOL LONG 🔼\n\n{words}")
+    assert s.action == "open" and s.confidence == confidence
+
+
+def test_risk_percent_is_not_risky():
+    s = parse_signal("LONG $SOL entry 100 SL 95 TP1 110 risk 1% god risk/reward")
+    assert s.risk_pct == pytest.approx(0.01) and s.confidence == "strong"
+
+
 @pytest.mark.parametrize("text,symbol,fraction", [
     ("SOLGT HELE NÅ 🔼🤑", None, 1.0),
     ("SOLGT WESTERN 🔼🤑", "WDC", 1.0),

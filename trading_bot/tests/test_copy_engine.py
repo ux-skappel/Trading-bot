@@ -169,6 +169,33 @@ def test_partial_position_scales_the_size():
     assert t.notional == pytest.approx(10_000 * 0.25)
 
 
+@pytest.mark.parametrize("words,margin", [
+    ("Bruker 10X giring", 1_000),
+    ("Risky! Bruker 10X giring", 500),
+    ("Veldig risky. Bruker 10X giring", 250),
+    ("Klink support! Bruker 10X giring", 1_500),
+])
+def test_his_tone_sets_the_size(words, margin):
+    data = minutes([100, 100, 101], symbol="SOL")
+    t = replay([post(0, f"SOL LONG 🔼 {words}")], source(data), FREE).trades[0]
+    assert t.margin == pytest.approx(margin)
+
+
+def test_tone_multipliers_come_from_the_config():
+    data = minutes([100, 100, 101], symbol="SOL")
+    cfg = CopyConfig(fee_pct=0, funding_pct_per_day=0, size_risky=0.3)
+    t = replay([post(0, "SOL LONG 🔼 Risky. Inne med 50% av full posisjon. 10X")], source(data), cfg).trades[0]
+    assert t.margin == pytest.approx(1_000 * 0.3 * 0.5)
+    assert "x 30% (risky)" in t.note
+
+
+def test_his_own_risk_percent_is_not_scaled_by_tone():
+    data = minutes([100, 100, 101], symbol="SOL")
+    t = replay([post(0, "LONG $SOL entry 100 SL 95 TP1 110 risk 1% klink support 10x")],
+               source(data), FREE).trades[0]
+    assert t.notional == pytest.approx(0.01 * 10_000 / 0.05)
+
+
 def test_live_account_ignores_posts_from_before_it_started():
     data = minutes([100, 100, 101, 102, 103, 104, 105])
     posts = [post(0, "SOL LONG 🔼 Bruker 10X giring og SL på $95", mid=40),

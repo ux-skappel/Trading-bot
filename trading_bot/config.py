@@ -98,6 +98,9 @@ class Settings:
         default_factory=lambda: float(_str("COPY_ENTRY_TIMEOUT_HOURS", "24")))
     copy_max_open_delay_minutes: float = field(
         default_factory=lambda: float(_str("COPY_MAX_OPEN_DELAY_MINUTES", "2")))
+    copy_size_very_risky: float = field(default_factory=lambda: float(_str("COPY_SIZE_VERY_RISKY", "0.25")))
+    copy_size_risky: float = field(default_factory=lambda: float(_str("COPY_SIZE_RISKY", "0.5")))
+    copy_size_strong: float = field(default_factory=lambda: float(_str("COPY_SIZE_STRONG", "1.5")))
 
     # --- Storage ---
     database_url: str = field(

@@ -17,6 +17,8 @@ from ..copytrade.store import (export_authors, get_live_since, import_telegram_e
                                load_snapshots)
 from .sr_chart import SUPPORT
 
+TONE = {"very_risky": "⚠️⚠️ very risky", "risky": "⚠️ risky", "strong": "💪 strong"}
+
 SETUP = """
 **Two ways to get his posts in:**
 
@@ -145,6 +147,7 @@ def render(settings) -> None:
     st.markdown("#### Copied trades")
     st.dataframe(pd.DataFrame([{
         "#": t.number, "coin": t.symbol, "side": t.side, "leverage": t.leverage, "status": t.status,
+        "his tone": TONE.get(t.signal.confidence, ""), "margin $": t.margin or None,
         "posted": t.posted_at, "entry": t.entry_price, "his entry": t.his_entry,
         "entry vs his": None if t.delay_cost is None else t.delay_cost * 100,
         "exits": ", ".join(f"{f.reason} {f.price:g}" for f in t.fills),
@@ -153,6 +156,8 @@ def render(settings) -> None:
         "note": t.note,
     } for t in result.trades]), column_config={
         "leverage": st.column_config.NumberColumn(format="%gx"),
+        "margin $": st.column_config.NumberColumn(
+            format="$%,.0f", help="Money put in. Smaller when he says risky, bigger when he sounds sure"),
         "posted": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
         "entry vs his": st.column_config.NumberColumn(format="%+.2f%%"),
         "P/L $": st.column_config.NumberColumn(format="$%+.2f"),

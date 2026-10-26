@@ -230,9 +230,17 @@ or picture) is ignored rather than guessed. The Copy trading tab lists
 positions open for more than 3 days without a sell, with whether they have a
 stop loss.
 
+**Size by how sure he sounds.** When his post gives no size, the default
+margin is scaled by his wording: "veldig risky", "risky ⚠️⚠️" or "gamble"
+→ ×0.25; "risky", ⚠️ or "ikke stor posisjon" → ×0.5; "klink support",
+"ser mega bra ut", "liker risk-rewarden" or "oversolgt og på support" → ×1.5.
+Risky wins when a post says both. Change the multipliers with
+`COPY_SIZE_VERY_RISKY`, `COPY_SIZE_RISKY` and `COPY_SIZE_STRONG`.
+
 Rules when his post leaves something open: enter at once if the price is
 within 1% of his entry, otherwise wait at his entry for 24 h; size by his risk
-% (with his stop), else his size %, else 10% of the account as margin; split
+% (with his stop), else his size %, else 10% of the account as margin scaled
+by how sure he sounds; split
 the position equally across his targets; stop-first when a candle touches both.
 Posts that aren't clear trade instructions are never traded and are listed
 with the reason.

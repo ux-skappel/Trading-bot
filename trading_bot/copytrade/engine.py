@@ -54,6 +54,10 @@ class CopyConfig:
     maintenance_margin: float = 0.0125
     live_since: Optional[datetime] = None        # None = replay every post (history test)
     max_open_delay_minutes: float = 2.0
+    # Default size x this when his post sounds very risky / risky / strong ("klink support").
+    size_very_risky: float = 0.25
+    size_risky: float = 0.5
+    size_strong: float = 1.5
     # True: trades share one account and need free margin (live). False: every trade
     # is sized from the start amount on its own, so a position whose exit was never
     # seen can't block his later calls (history test).
@@ -67,7 +71,14 @@ class CopyConfig:
             max_slippage_pct=settings.copy_max_slippage_pct,
             entry_timeout_hours=settings.copy_entry_timeout_hours,
             max_open_delay_minutes=settings.copy_max_open_delay_minutes,
+            size_very_risky=settings.copy_size_very_risky,
+            size_risky=settings.copy_size_risky,
+            size_strong=settings.copy_size_strong,
         )
+
+    def confidence_scale(self, confidence: str) -> float:
+        return {"very_risky": self.size_very_risky, "risky": self.size_risky,
+                "strong": self.size_strong}.get(confidence, 1.0)
 
 
 @dataclass
@@ -270,9 +281,13 @@ class CopyEngine:
         elif sig.size_pct:
             notional = sig.size_pct * equity * lev
             how = f"size {sig.size_pct:.2%}"
-        else:
+        else:  # no size in his post: his tone decides (his own risk/size % already does)
             notional = self.cfg.default_margin_pct * equity * lev
             how = f"default {self.cfg.default_margin_pct:.0%} margin"
+            tone = self.cfg.confidence_scale(sig.confidence)
+            if tone != 1.0:
+                notional *= tone
+                how += f" x {tone:.0%} ({sig.confidence.replace('_', ' ')})"
         if sig.size_scale != 1.0:
             notional *= sig.size_scale
             how += f" x {sig.size_scale:.0%}"

@@ -90,6 +90,7 @@ class Signal:
     risk_pct: Optional[float] = None     # fraction of the account lost at the stop
     size_pct: Optional[float] = None     # fraction of the account used as margin
     size_scale: float = 1.0              # "in with 33% of the full position" -> 0.33
+    confidence: str = "normal"           # very_risky | risky | normal | strong (from his wording)
     close_fraction: float = 1.0          # for close: share of the position to close
     new_stop: Optional[float] = None     # for move_sl
     stop_to_entry: bool = False          # for move_sl: break-even
@@ -116,6 +117,8 @@ class Signal:
                 parts.append(f"size {self.size_pct:.2%}")
             if self.size_scale != 1.0:
                 parts.append(f"{self.size_scale:.0%} of normal size")
+            if self.confidence != "normal":
+                parts.append(CONFIDENCE_LABELS[self.confidence])
             return " · ".join(parts)
         if self.action == "close":
             what = "all" if self.close_fraction >= 1 else f"{self.close_fraction:.0%}"
@@ -284,6 +287,40 @@ CLOSE_WORDS = re.compile(
 STOP_LEVEL = (r"(?:\bsl\b|stop[\s-]?loss|\bstop(?:p)?(?:[\s-]?loss)?\b|invalidation)\s*[:=@\-]?\s*"
               r"(?:at|på|ved|under|below|over|above|rundt)?\s*\$?(" + NUM + r")(k)?")
 
+# How sure he sounds -> how big the copy is (multipliers in CopyConfig / .env).
+CONFIDENCE_LABELS = {"very_risky": "very risky: much smaller size", "risky": "risky: smaller size",
+                     "strong": "strong: bigger size"}
+NEGATED = re.compile(r"\b(?:ikke|not|lite|lav)\s+(?:så\s+|so\s+|helt\s+|veldig\s+|very\s+)?"
+                     r"(?:risky|risikab\w*|klink\w*|trygg\w*|bra|sterk\w*|perfekt\w*)")
+VERY_RISKY = re.compile(
+    r"\b(?:veldig|svært|super|ekstremt|ekstra|mega|sykt|very|extremely|highly)\s+risky\b"
+    r"|\brisky\W*(?:⚠️?\W*){2,}|\bgambl\w*|\blotto\w*|\byolo\b")
+RISKY = re.compile(
+    r"\brisky\b|\brisikab\w*|\bhøy\s+risiko\b|\bhigh\s+risk\b|⚠|\bforsiktig\w*|\bcareful\b"
+    r"|\b(?:ikke\s+(?:så\s+)?stor|liten|lite)\s+posisjon|\bsmall\s+position")
+STRONG = re.compile(
+    r"\bklink\w*|\b(?:mega|veldig|kjempe|super|sykt|helt)\s+(?:bra|sterk\w*|god\w*)\b"
+    r"|\bser\s+(?:(?!ikke\b)\w+\s+)?(?:bra|sterk\w*|god|perfekt\w*)\s+ut\b|\bsterk\w*\s+support"
+    r"|\b(?:liker?|love|god|good|great|fin)\s+(?:\w+\s+)?risk[\s/-]?reward\w*"
+    r"|\bperfekt\w*|\btrygg\w*|\bhigh\s+conviction\b"
+    r"|oversolgt\W+(?:\w+\W+){0,3}support|support\W+(?:\w+\W+){0,3}oversolgt")
+
+
+def _confidence(sig: Signal, lower: str) -> None:
+    """Risky words make the copy smaller, solid ones ("klink support") bigger. Risky wins."""
+    text = NEGATED.sub(" ", lower)
+    strong = STRONG.search(text)
+    for label, pattern in (("very_risky", VERY_RISKY), ("risky", RISKY)):
+        m = pattern.search(text)
+        if m:
+            sig.confidence = label
+            sig.notes.append(f"he says '{m.group(0).strip()}': {CONFIDENCE_LABELS[label]}"
+                             + (f" (also '{strong.group(0)}', but risky wins)" if strong else ""))
+            return
+    if strong:
+        sig.confidence = "strong"
+        sig.notes.append(f"he says '{strong.group(0)}': {CONFIDENCE_LABELS['strong']}")
+
 
 def _close_signal(raw: str, lower: str, close: re.Match) -> Signal:
     after = raw[close.end():close.end() + 80]
@@ -342,9 +379,7 @@ def _open_details(sig: Signal, raw: str, lower: str) -> Signal:
     if partial and 0 < int(partial.group(1)) < 100:
         sig.size_scale = int(partial.group(1)) / 100
         sig.notes.append(f"in with {sig.size_scale:.0%} of a full position")
-    elif re.search(r"\b(ikke\s+stor|liten|lite)\s+posisjon|\bsmall\s+position", lower):
-        sig.size_scale = 0.5
-        sig.notes.append("small position: half the normal size")
+    _confidence(sig, lower)
 
     side, ref = sig.side, (sig.entry_high if sig.side == "long" else sig.entry_low)
     if sig.stop_loss and ref:
