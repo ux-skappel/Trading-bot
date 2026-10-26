@@ -112,8 +112,9 @@ def render(settings) -> None:
     if history:
         config.share_margin = False
         st.warning("TEST ON OLD POSTS — none of these were bought. It shows how copying him "
-                   "would have gone. Every trade gets the same size (from the start amount), so a "
-                   "position whose sell was missed can't block his later trades.")
+                   "would have gone. Each trade is a share of the account at that moment (start + "
+                   "gains and losses so far), and a position whose sell was missed never blocks his "
+                   "later trades.")
     elif live_since is None:
         st.info("The live paper account starts when you run `python -m trading_bot.main copy listen`.")
         return

@@ -13,7 +13,8 @@ for ``entry_timeout_hours``. Posts without an entry are filled at once.
 
 Size: his risk % (with his stop) if he gives one, else his size % of the
 account, else ``default_margin_pct`` of the account as margin — always at his
-leverage (1x if he names none).
+leverage (1x if he names none). "The account" is the start amount plus every
+realized gain and loss so far, so winners make later trades bigger.
 
 Exits: his stop loss, his targets (the position is split equally across
 them), and his follow-up posts (close / close part / move stop / cancel).
@@ -79,9 +80,10 @@ class CopyConfig:
     size_very_risky: float = 0.25
     size_risky: float = 0.5
     size_strong: float = 1.5
-    # True: trades share one account and need free margin (live). False: every trade
-    # is sized from the start amount on its own, so a position whose exit was never
-    # seen can't block his later calls (history test).
+    # Sizes are always a share of the account as it stands (start + realized P/L), so
+    # gains make the next trade bigger and losses smaller. True: open positions also
+    # need free margin (live). False: they never block a later call, so a position
+    # whose exit was never seen can't stop his later trades (history test).
     share_margin: bool = True
 
     @classmethod
@@ -296,7 +298,7 @@ class CopyEngine:
 
     def _open(self, trade: CopyTrade, t: datetime, price: float) -> None:
         sig = trade.signal
-        equity = self.cash if self.cfg.share_margin else self.cfg.start_equity
+        equity = self.cash   # start + realized P/L: sizes grow after wins, shrink after losses
         lev = trade.leverage
         if sig.risk_pct and trade.stop:
             stop_dist = abs(price - trade.stop) / price

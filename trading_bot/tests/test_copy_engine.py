@@ -460,3 +460,15 @@ def test_old_posts_close_at_the_mark_on_his_card():
                   image_text="• Liquid | TSLA | PERP 10x LONG | CURRENT RETURN | +5% | ENTRY | $300,00 | MARK | $301,50")]
     t = replay(posts, source(data), FREE).trades[0]
     assert t.fills[-1].price == 301.5
+
+
+def test_sizes_grow_with_the_account_after_a_win():
+    data = {**minutes([100, 100, 100, 110, 110, 110, 110]), **minutes([50] * 7, symbol="ETH")}
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring", mid=200),
+             post(3, "Selger hele nå", mid=201, reply=200),       # sold at 110
+             post(4, "ETH LONG 🔼 Bruker 10X giring", mid=202)]
+    for share in (True, False):   # live and the test on old posts size the same way
+        sol, eth = replay(posts, source(data), CopyConfig(fee_pct=0, funding_pct_per_day=0,
+                                                         share_margin=share)).trades
+        assert sol.pnl == pytest.approx(1_000)                 # +10% on a $10,000 position
+        assert eth.margin == pytest.approx(0.10 * 11_000)      # 10% of the new $11,000

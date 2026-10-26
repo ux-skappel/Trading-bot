@@ -258,7 +258,8 @@ Risky wins when a post says both. Change the multipliers with
 Rules when his post leaves something open: enter at once if the price is
 within 1% of his entry, otherwise wait at his entry for 24 h; size by his risk
 % (with his stop), else his size %, else 10% of the account as margin scaled
-by how sure he sounds; split
+by how sure he sounds (the account = start amount + realized gains and losses,
+so after wins the next trade is bigger, after losses smaller); split
 the position equally across his targets; stop-first when a candle touches both.
 Posts that aren't clear trade instructions are never traded and are listed
 with the reason.

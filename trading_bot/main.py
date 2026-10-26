@@ -254,7 +254,7 @@ def _write_copy_review(result, path: Path) -> int:
             lines.append("[image] " + post.image_text.replace("\n", " | ")[:200])
         lines.append(f">>> understood: {sig.summary()}" + (f"  ({'; '.join(sig.notes)})" if sig.notes else ""))
         lines.append(f">>> bot did: {o.outcome}\n")
-    lines.append("=== Copied trades (test on old posts, every trade sized from the start amount)")
+    lines.append("=== Copied trades (test on old posts, each sized from the account at that moment)")
     for t in result.trades:
         exits = ", ".join(f"{f.reason} {f.price:g}" for f in t.fills) or "-"
         lines.append(f"#{t.number} {t.symbol} {t.side} {t.leverage:g}x {t.status} · margin ${t.margin:,.0f} · "
@@ -327,7 +327,7 @@ def cmd_copy(args: argparse.Namespace) -> int:
         if args.history:
             config.share_margin = False
             print("\nTEST ON HIS OLD POSTS (not bought: shows how copying him would have gone; "
-                  "every trade sized from the start amount)")
+                  "each trade sized from the account at that moment)")
         else:
             config.live_since = get_live_since()
             if config.live_since is None:
