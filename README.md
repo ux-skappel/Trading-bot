@@ -207,6 +207,14 @@ here sends Telegram messages or places real orders.
 3. Check how a post is understood: paste it in the tab's parser box, or
    `python -m trading_bot.main copy parse "LONG $SOL entry 142 SL 138 TP 150 10x"`.
 
+**Live paper account vs. test on old posts.** The live account starts the
+first time you run `copy listen` (restart it with `copy reset-live`): only his
+posts after that are bought, at the price captured the moment the bot sees
+them, and a buy seen more than `COPY_MAX_OPEN_DELAY_MINUTES` (default 2) after
+he posted is skipped. Sells and stop moves on positions you hold still happen
+when seen. `copy report` shows the live account; `copy report --history` (or
+the toggle in the tab) replays all stored posts as a clearly labelled test.
+
 Rules when his post leaves something open: enter at once if the price is
 within 1% of his entry, otherwise wait at his entry for 24 h; size by his risk
 % (with his stop), else his size %, else 10% of the account as margin; split

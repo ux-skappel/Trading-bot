@@ -95,6 +95,8 @@ class Settings:
         default_factory=lambda: float(_str("COPY_MAX_SLIPPAGE_PCT", "0.01")))
     copy_entry_timeout_hours: float = field(
         default_factory=lambda: float(_str("COPY_ENTRY_TIMEOUT_HOURS", "24")))
+    copy_max_open_delay_minutes: float = field(
+        default_factory=lambda: float(_str("COPY_MAX_OPEN_DELAY_MINUTES", "2")))
 
     # --- Storage ---
     database_url: str = field(

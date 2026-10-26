@@ -9,7 +9,7 @@ from typing import Iterable, List, Optional
 from sqlalchemy import select
 
 from ..storage.database import init_db, session_scope
-from ..storage.models import CopyMessage
+from ..storage.models import CopyMessage, CopyQuote, CopyState
 from .engine import Post
 
 
@@ -45,7 +45,49 @@ def load_posts(chat_id: Optional[str] = None) -> List[Post]:
         query = select(CopyMessage).order_by(CopyMessage.timestamp, CopyMessage.message_id)
         if chat_id:
             query = query.where(CopyMessage.chat_id == str(chat_id))
-        return [Post(r.message_id, r.timestamp, r.text, r.reply_to) for r in db.scalars(query)]
+        return [Post(r.message_id, r.timestamp, r.text, r.reply_to, r.fetched_at) for r in db.scalars(query)]
+
+
+def save_snapshot(chat_id: str, message_id: int, at: datetime, mids: dict) -> None:
+    """Keep the prices seen when a post arrived (first sighting wins)."""
+    if not mids:
+        return
+    with session_scope() as db:
+        exists = db.scalars(select(CopyQuote).where(
+            CopyQuote.chat_id == str(chat_id), CopyQuote.message_id == message_id)).first()
+        if exists is None:
+            db.add(CopyQuote(chat_id=str(chat_id), message_id=message_id, at=at, mids_json=json.dumps(mids)))
+
+
+def load_snapshots() -> dict:
+    """{message_id: {coin: price}} for every post the bot saw live."""
+    init_db()
+    with session_scope() as db:
+        return {q.message_id: json.loads(q.mids_json) for q in db.scalars(select(CopyQuote))}
+
+
+LIVE_SINCE = "live_since"
+
+
+def get_live_since() -> Optional[datetime]:
+    """When the live paper account started (first `copy listen`), or None."""
+    init_db()
+    with session_scope() as db:
+        row = db.get(CopyState, LIVE_SINCE)
+        return datetime.fromisoformat(row.value) if row else None
+
+
+def set_live_since(when: Optional[datetime] = None) -> datetime:
+    """Start (or restart) the live paper account now: only posts after this are bought."""
+    init_db()
+    when = when or datetime.utcnow()
+    with session_scope() as db:
+        row = db.get(CopyState, LIVE_SINCE)
+        if row is None:
+            db.add(CopyState(key=LIVE_SINCE, value=when.isoformat()))
+        else:
+            row.value = when.isoformat()
+    return when
 
 
 def _export_text(text) -> str:

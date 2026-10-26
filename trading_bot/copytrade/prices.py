@@ -106,6 +106,22 @@ class CandleFeed:
     def max_leverage(self, symbol: str) -> Optional[float]:
         return self.resolve(symbol)[2]
 
+    def snapshot_mids(self) -> Dict[str, float]:
+        """Every perp's current mid price (crypto + xyz stocks) in two calls."""
+        mids: Dict[str, float] = {}
+        for payload in ({"type": "allMids"}, {"type": "allMids", "dex": STOCK_DEX}):
+            try:
+                for coin, px in self._hl_post(payload).items():
+                    if not coin.startswith(("#", "@")):
+                        mids[coin] = float(px)
+            except Exception as exc:
+                logger.warning("Hyperliquid prices unavailable: %s", exc)
+        return mids
+
+    def price_from_snapshot(self, mids: Dict[str, float], symbol: str) -> Optional[float]:
+        coin, scale, _ = self.resolve(symbol)
+        return mids[coin] / scale if coin in mids else None
+
     @staticmethod
     def hl_coin(symbol: str) -> Tuple[str, float]:
         sym = HL_RENAMES.get(symbol.upper(), symbol.upper())

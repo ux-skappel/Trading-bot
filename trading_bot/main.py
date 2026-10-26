@@ -279,14 +279,31 @@ def cmd_copy(args: argparse.Namespace) -> int:
     if args.copy_cmd == "report":
         from .copytrade.engine import CopyConfig, replay
         from .copytrade.prices import CandleFeed
-        from .copytrade.store import load_posts
+        from .copytrade.store import get_live_since, load_posts
         posts = load_posts()
         if not posts:
             print("No posts stored yet. Run `copy backfill` (Telegram API) or `copy import` (export file).")
             return 1
+        config = CopyConfig.from_settings(get_settings())
+        if args.history:
+            print("\nTEST ON HIS OLD POSTS (not bought: shows how copying him would have gone)")
+        else:
+            config.live_since = get_live_since()
+            if config.live_since is None:
+                print("The live paper account starts when you run `copy listen`. "
+                      "Use `copy report --history` to test his old posts.")
+                return 1
+            print(f"\nLIVE PAPER ACCOUNT since {config.live_since:%Y-%m-%d %H:%M} UTC")
+        from .copytrade.engine import feed_snapshot
+        from .copytrade.store import load_snapshots
         feed = CandleFeed()
-        _print_copy_report(replay(posts, feed.candles, CopyConfig.from_settings(get_settings()),
-                                  max_leverage=feed.max_leverage))
+        _print_copy_report(replay(posts, feed.candles, config, max_leverage=feed.max_leverage,
+                                  snapshot=feed_snapshot(feed, load_snapshots())))
+        return 0
+    if args.copy_cmd == "reset-live":
+        from .copytrade.store import set_live_since
+        when = set_live_since()
+        print(f"Live paper account restarted {when:%Y-%m-%d %H:%M} UTC: only posts from now on are bought.")
         return 0
     return 2
 
@@ -356,7 +373,9 @@ def build_parser() -> argparse.ArgumentParser:
     po.add_argument("--limit", type=int, default=40)
     pa = csub.add_parser("parse", help="show how a post would be understood")
     pa.add_argument("text", nargs="+")
-    csub.add_parser("report", help="replay his stored posts as paper trades")
+    rp = csub.add_parser("report", help="the live paper account (or --history: test on old posts)")
+    rp.add_argument("--history", action="store_true", help="test on all his stored posts instead")
+    csub.add_parser("reset-live", help="restart the live paper account from now")
 
     return p
 

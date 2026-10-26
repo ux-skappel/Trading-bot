@@ -9,10 +9,11 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from ..copytrade.engine import CopyConfig, CopyResult, replay
+from ..copytrade.engine import CopyConfig, CopyResult, feed_snapshot, replay
 from ..copytrade.parser import parse_signal
 from ..copytrade.prices import CandleFeed
-from ..copytrade.store import export_authors, import_telegram_export, load_posts
+from ..copytrade.store import (export_authors, get_live_since, import_telegram_export, load_posts,
+                               load_snapshots)
 from .sr_chart import SUPPORT
 
 SETUP = """
@@ -30,7 +31,8 @@ SETUP = """
 @st.cache_data(ttl=300, show_spinner=False)
 def _replay(posts, config: CopyConfig) -> CopyResult:
     feed = CandleFeed()
-    return replay(posts, feed.candles, config, max_leverage=feed.max_leverage)
+    return replay(posts, feed.candles, config, max_leverage=feed.max_leverage,
+                  snapshot=feed_snapshot(feed, load_snapshots()))
 
 
 def _parser_box() -> None:
@@ -98,8 +100,27 @@ def render(settings) -> None:
         return
 
     config = CopyConfig.from_settings(settings)
+    live_since = get_live_since()
+    history = st.toggle(
+        "Test on his old posts instead (not bought)", value=live_since is None,
+        help="Replays every stored post at the time he posted it, to see how copying him "
+             "would have gone. The live account only buys his posts after you started listening.",
+    )
+    if history:
+        st.warning("TEST ON OLD POSTS — none of these were bought. "
+                   "It shows how copying him would have gone.")
+    elif live_since is None:
+        st.info("The live paper account starts when you run `python -m trading_bot.main copy listen`.")
+        return
+    else:
+        config.live_since = live_since
+        st.success(f"LIVE paper account since {live_since:%Y-%m-%d %H:%M} UTC: only his posts after "
+                   "that are bought, at the moment the bot sees them.")
     with st.spinner("Replaying his posts against real prices..."):
         result = _replay(posts, config)
+    if not result.posts:
+        st.info("No posts from him since the live account started. New posts show up here.")
+        return
 
     instructions = [o for o in result.posts if o.signal.action != "info"]
     open_trades = [t for t in result.trades if t.status == "open"]

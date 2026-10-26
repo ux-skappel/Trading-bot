@@ -167,3 +167,51 @@ def test_partial_position_scales_the_size():
     t = replay([post(0, "TESLA LONG 🔼 Bruker 10X giring. Inne med 25% av full ønsket posisjon")],
                source(data), FREE).trades[0]
     assert t.notional == pytest.approx(10_000 * 0.25)
+
+
+def test_live_account_ignores_posts_from_before_it_started():
+    data = minutes([100, 100, 101, 102, 103, 104, 105])
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring og SL på $95", mid=40),
+             post(3, "ETH LONG 🔼 Bruker 5X giring", mid=41)]
+    cfg = CopyConfig(fee_pct=0, funding_pct_per_day=0, live_since=T0 + timedelta(minutes=2))
+    r = replay(posts, source({**data, **minutes([50] * 7, symbol="ETH")}), cfg)
+    assert [t.symbol for t in r.trades] == ["ETH"]
+    assert [o.post.message_id for o in r.posts] == [41]
+
+
+def test_live_buy_seen_too_late_is_skipped_but_a_late_sell_still_happens():
+    data = minutes([100] * 3 + [101, 102, 103, 104, 105] + [106] * 60)
+    live = T0 - timedelta(hours=1)
+    on_time = Post(50, T0 + timedelta(minutes=1), "SOL LONG 🔼 Bruker 10X giring og SL på $90",
+                   received_at=T0 + timedelta(minutes=1, seconds=5))
+    late_buy = Post(51, T0 + timedelta(minutes=2), "ETH LONG 🔼 Bruker 5X giring",
+                    received_at=T0 + timedelta(minutes=50))
+    late_sell = Post(52, T0 + timedelta(minutes=4), "SOLGT HELE NÅ", reply_to=50,
+                     received_at=T0 + timedelta(minutes=45))
+    cfg = CopyConfig(fee_pct=0, funding_pct_per_day=0, live_since=live)
+    r = replay([on_time, late_buy, late_sell], source({**data, **minutes([50] * 70, symbol="ETH")}), cfg)
+    assert [t.symbol for t in r.trades] == ["SOL"]
+    assert any("missed" in o.outcome for o in r.posts)
+    sol = r.trades[0]
+    assert sol.status == "closed"
+    assert sol.fills[-1].time == T0 + timedelta(minutes=45)   # sold when the bot saw his post
+    assert sol.fills[-1].price == 106
+
+
+def test_live_buy_fills_at_the_price_seen_when_the_post_arrived():
+    data = minutes([100, 100, 101, 102, 103, 104])
+    seen = Post(60, T0 + timedelta(minutes=1, seconds=10), "SOL LONG 🔼 Bruker 10X giring og SL på $95",
+                received_at=T0 + timedelta(minutes=1, seconds=12))
+    cfg = CopyConfig(fee_pct=0, funding_pct_per_day=0, live_since=T0)
+    r = replay([seen], source(data), cfg, snapshot=lambda mid, sym: 100.37 if (mid, sym) == (60, "SOL") else None)
+    t = r.trades[0]
+    assert t.entry_price == 100.37
+    assert t.entry_time == seen.received_at
+
+
+def test_live_buy_later_than_two_minutes_is_skipped():
+    data = minutes([100] * 10)
+    late = Post(61, T0 + timedelta(minutes=1), "SOL LONG 🔼 Bruker 10X giring",
+                received_at=T0 + timedelta(minutes=3, seconds=30))
+    r = replay([late], source(data), CopyConfig(live_since=T0))
+    assert r.trades == [] and "missed" in r.posts[0].outcome

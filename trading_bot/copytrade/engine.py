@@ -1,5 +1,12 @@
 """Replay a trader's posts as paper trades that follow his rules exactly.
 
+Live account (``live_since`` set): only posts after that moment are acted on,
+at the moment the bot actually saw them. A buy seen more than
+``max_open_delay_minutes`` after he posted is skipped (the bot was off);
+sells and stop moves on positions we hold still happen when seen. Without
+``live_since`` every stored post is replayed at its own time (a test on his
+old posts).
+
 Entry: if the price when the post arrives is still within ``max_slippage_pct``
 of his entry (or better), fill right away; otherwise wait at his entry price
 for ``entry_timeout_hours``. Posts without an entry are filled at once.
@@ -45,6 +52,8 @@ class CopyConfig:
     fee_pct: float = 0.00095
     funding_pct_per_day: float = 0.0003
     maintenance_margin: float = 0.0125
+    live_since: Optional[datetime] = None        # None = replay every post (history test)
+    max_open_delay_minutes: float = 2.0
 
     @classmethod
     def from_settings(cls, settings) -> "CopyConfig":
@@ -53,6 +62,7 @@ class CopyConfig:
             default_margin_pct=settings.copy_default_margin_pct,
             max_slippage_pct=settings.copy_max_slippage_pct,
             entry_timeout_hours=settings.copy_entry_timeout_hours,
+            max_open_delay_minutes=settings.copy_max_open_delay_minutes,
         )
 
 
@@ -64,6 +74,7 @@ class Post:
     time: datetime
     text: str
     reply_to: Optional[int] = None
+    received_at: Optional[datetime] = None     # when the bot saw it
 
 
 @dataclass
@@ -177,15 +188,17 @@ class CopyResult:
 
 CandleSource = Callable[[str, datetime], Tuple[List[Bar], str]]
 MaxLeverage = Callable[[str], Optional[float]]
+Snapshot = Callable[[int, str], Optional[float]]     # (message id, symbol) -> price when seen
 
 
 class CopyEngine:
     """Event-by-event paper replay of the trader's posts."""
 
     def __init__(self, candles: CandleSource, config: Optional[CopyConfig] = None,
-                 max_leverage: Optional[MaxLeverage] = None) -> None:
+                 max_leverage: Optional[MaxLeverage] = None, snapshot: Optional[Snapshot] = None) -> None:
         self.get_candles = candles
         self.max_leverage = max_leverage
+        self.snapshot = snapshot
         self.cfg = config or CopyConfig()
         self.cash = self.cfg.start_equity
         self.trades: List[CopyTrade] = []
@@ -368,11 +381,24 @@ class CopyEngine:
             return [t for t in matches if t.symbol == sig.symbol], sig.symbol
         return matches[-1:], "latest"
 
+    def act_time(self, post: Post) -> datetime:
+        """When the bot could act: when it saw the post (live), else when it was posted."""
+        if self.cfg.live_since and post.received_at and post.received_at > post.time:
+            return post.received_at
+        return post.time
+
     def handle(self, post: Post) -> None:
+        at = self.act_time(post)
         for trade in self._active():
-            self._advance(trade, post.time)
+            self._advance(trade, at)
+        late = (at - post.time).total_seconds() / 60
         for sig in parse_signals(post.text):
-            self.outcomes.append(PostOutcome(post, sig, self._apply(post, sig)))
+            if sig.action == "open" and late > self.cfg.max_open_delay_minutes:
+                outcome = (f"missed: seen {late:.1f} min after he posted (limit "
+                           f"{self.cfg.max_open_delay_minutes:g} min), not bought")
+            else:
+                outcome = self._apply(Post(post.message_id, at, post.text, post.reply_to), sig)
+            self.outcomes.append(PostOutcome(post, sig, outcome))
 
     def _apply(self, post: Post, sig: Signal) -> str:
         if sig.action == "info":
@@ -402,7 +428,7 @@ class CopyEngine:
         for t in trades:
             self._link(post.message_id, t)
             if sig.action == "close":
-                price = self._price_at(t.symbol, post.time)
+                price = self._seen_price(post, t.symbol) or self._price_at(t.symbol, post.time)
                 if price is None:
                     continue
                 self._book(t, self._time_at(t.symbol, post.time), price, t.remaining * sig.close_fraction, "his close")
@@ -412,6 +438,12 @@ class CopyEngine:
                 done.append(f"stop on #{t.number} now {t.stop:g}")
         suffix = " (no coin named: latest position)" if how == "latest" else ""
         return "; ".join(done) + suffix if done else "no price data"
+
+    def _seen_price(self, post: Post, symbol: str) -> Optional[float]:
+        """Live account: the price captured when the bot saw the post, if any."""
+        if self.cfg.live_since and self.snapshot:
+            return self.snapshot(post.message_id, symbol)
+        return None
 
     def _time_at(self, symbol: str, t: datetime) -> datetime:
         i = self._index_at(symbol, t)
@@ -444,6 +476,9 @@ class CopyEngine:
         self._cursor[number] = i
         bar = self._bars[sig.symbol][i]
         price = bar.open
+        seen = self._seen_price(post, sig.symbol)
+        if seen:
+            price, bar = seen, Bar(post.time, seen, seen, seen, seen)   # fill at the live price, now
         if trade.his_entry is None:
             trade.his_entry = price
             self._open(trade, bar.timestamp, price)
@@ -482,10 +517,21 @@ class CopyEngine:
         return CopyResult(self.trades, self.outcomes, equity, self.cfg.start_equity)
 
 
+def feed_snapshot(feed, snapshots: Dict[int, Dict[str, float]]) -> Snapshot:
+    """Look up a stored price snapshot for (message id, symbol) via the feed's market names."""
+    def lookup(message_id: int, symbol: str) -> Optional[float]:
+        mids = snapshots.get(message_id)
+        return feed.price_from_snapshot(mids, symbol) if mids else None
+    return lookup
+
+
 def replay(posts: List[Post], candles: CandleSource, config: Optional[CopyConfig] = None,
-           now: Optional[datetime] = None, max_leverage: Optional[MaxLeverage] = None) -> CopyResult:
+           now: Optional[datetime] = None, max_leverage: Optional[MaxLeverage] = None,
+           snapshot: Optional[Snapshot] = None) -> CopyResult:
     """Run all posts (any order) through a fresh engine."""
-    engine = CopyEngine(candles, config, max_leverage)
-    for post in sorted(posts, key=lambda p: (p.time, p.message_id)):
+    engine = CopyEngine(candles, config, max_leverage, snapshot)
+    since = engine.cfg.live_since
+    chosen = [p for p in posts if since is None or p.time >= since]
+    for post in sorted(chosen, key=lambda p: (engine.act_time(p), p.message_id)):
         engine.handle(post)
     return engine.finish(now)

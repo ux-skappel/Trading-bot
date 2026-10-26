@@ -8,6 +8,7 @@ file like a password and never share or commit it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,8 +16,9 @@ from typing import List, Optional
 
 from ..config import get_settings
 from ..storage.database import init_db
-from .parser import parse_signal
-from .store import delete_chat_posts, save_message
+from .parser import parse_signals
+from .prices import CandleFeed
+from .store import delete_chat_posts, get_live_since, save_message, save_snapshot, set_live_since
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +215,12 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
 async def _listen(client, chat: str, author: str, topic: str) -> None:
     from telethon import events  # type: ignore
 
+    started = get_live_since()
+    if started is None:
+        started = set_live_since()
+        print(f"Live paper account started {started:%Y-%m-%d %H:%M} UTC: only his posts from now on are bought.")
+    else:
+        print(f"Live paper account running since {started:%Y-%m-%d %H:%M} UTC.")
     print("Catching up on the last 3 days first (in case the computer was off or asleep)...")
     await _backfill(client, chat, author, topic, days=3, fresh=False)
     entity = await _resolve_chat(client, chat)
@@ -221,6 +229,8 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
     kwargs = {"chats": entity}
     if who is not None:
         kwargs["from_users"] = who
+    feed = CandleFeed()
+    loop = asyncio.get_running_loop()
 
     async def on_message(event) -> None:
         msg = event.message
@@ -231,8 +241,14 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
             if msg.media:
                 print(f"[{stamp} UTC] image without text: skipped")
             return
+        signals = parse_signals(msg.message)
+        seen = datetime.utcnow()
+        if isinstance(event, events.NewMessage.Event) and any(s.tradable for s in signals):
+            mids = await loop.run_in_executor(None, feed.snapshot_mids)   # the price right now
+            save_snapshot(str(entity.id), msg.id, seen, mids)
         status = _save(entity.id, msg)
-        print(f"[{stamp} UTC] {status}: {parse_signal(msg.message).summary()}")
+        delay = (seen - _utc(msg.date)).total_seconds()
+        print(f"[{stamp} UTC, seen after {delay:.0f}s] {status}: " + " | ".join(s.summary() for s in signals))
 
     client.add_event_handler(on_message, events.NewMessage(**kwargs))
     client.add_event_handler(on_message, events.MessageEdited(**kwargs))

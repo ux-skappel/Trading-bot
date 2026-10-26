@@ -190,3 +190,25 @@ class CopyMessage(Base):
     reply_to: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     edited: Mapped[bool] = mapped_column(Boolean, default=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CopyState(Base):
+    """Small key/value store for copy trading (e.g. when the live paper account started)."""
+
+    __tablename__ = "copy_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(255))
+
+
+class CopyQuote(Base):
+    """Hyperliquid prices captured the moment the bot saw one of his posts."""
+
+    __tablename__ = "copy_quotes"
+    __table_args__ = (UniqueConstraint("chat_id", "message_id", name="uq_copy_quote"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String(64), index=True)
+    message_id: Mapped[int] = mapped_column(Integer, index=True)
+    at: Mapped[datetime] = mapped_column(DateTime)              # UTC
+    mids_json: Mapped[str] = mapped_column(Text)                # {"BTC": 80123.0, "xyz:GOOGL": 321.4, ...}
