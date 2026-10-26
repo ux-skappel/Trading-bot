@@ -285,3 +285,13 @@ def test_reply_sell_shows_what_his_image_says():
     nvda_sell, tsla_sell = r.posts[-2].outcome, r.posts[-1].outcome
     assert "#1 NVDA" in nvda_sell and "he replied to it" in nvda_sell and "image says NVDA" in nvda_sell
     assert "#2 TSLA" in tsla_sell and "⚠ his image says NVDA" in tsla_sell
+
+
+def test_history_test_sizes_each_trade_on_its_own():
+    data = {**minutes([100] * 6), **minutes([50] * 6, symbol="ETH")}
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring, 100% av porteføljen", mid=120),
+             post(1, "ETH LONG 🔼 Bruker 10X giring", mid=121)]
+    shared = replay(posts, source(data), FREE)
+    alone = replay(posts, source(data), CopyConfig(fee_pct=0, funding_pct_per_day=0, share_margin=False))
+    assert shared.trades[1].status == "skipped"
+    assert alone.trades[1].status == "open" and alone.trades[1].notional == pytest.approx(10_000)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import datetime, timedelta
 
 import altair as alt
 import pandas as pd
@@ -107,8 +108,10 @@ def render(settings) -> None:
              "would have gone. The live account only buys his posts after you started listening.",
     )
     if history:
-        st.warning("TEST ON OLD POSTS — none of these were bought. "
-                   "It shows how copying him would have gone.")
+        config.share_margin = False
+        st.warning("TEST ON OLD POSTS — none of these were bought. It shows how copying him "
+                   "would have gone. Every trade gets the same size (from the start amount), so a "
+                   "position whose sell was missed can't block his later trades.")
     elif live_since is None:
         st.info("The live paper account starts when you run `python -m trading_bot.main copy listen`.")
         return
@@ -155,6 +158,16 @@ def render(settings) -> None:
         "P/L $": st.column_config.NumberColumn(format="$%+.2f"),
         "on margin": st.column_config.NumberColumn(format="%+.1f%%"),
     }, hide_index=True, use_container_width=True)
+
+    now = datetime.utcnow()
+    stale = [t for t in result.trades if t.status == "open" and t.entry_time
+             and now - t.entry_time > timedelta(days=3)]
+    if stale:
+        st.warning(
+            f"{len(stale)} position(s) open for more than 3 days without a sell from him: "
+            + ", ".join(f"#{t.number} {t.symbol} (since {t.entry_time:%m-%d})" for t in stale)
+            + ". He may have sold without a post the bot could link (another topic, or no reply/picture)."
+        )
 
     st.markdown("#### His posts and what the bot did")
     only_trades = st.toggle("Only trade instructions", value=True)

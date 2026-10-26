@@ -54,6 +54,10 @@ class CopyConfig:
     maintenance_margin: float = 0.0125
     live_since: Optional[datetime] = None        # None = replay every post (history test)
     max_open_delay_minutes: float = 2.0
+    # True: trades share one account and need free margin (live). False: every trade
+    # is sized from the start amount on its own, so a position whose exit was never
+    # seen can't block his later calls (history test).
+    share_margin: bool = True
 
     @classmethod
     def from_settings(cls, settings) -> "CopyConfig":
@@ -256,7 +260,7 @@ class CopyEngine:
 
     def _open(self, trade: CopyTrade, t: datetime, price: float) -> None:
         sig = trade.signal
-        equity = self.cash
+        equity = self.cash if self.cfg.share_margin else self.cfg.start_equity
         lev = trade.leverage
         if sig.risk_pct and trade.stop:
             stop_dist = abs(price - trade.stop) / price
@@ -272,7 +276,7 @@ class CopyEngine:
             notional *= sig.size_scale
             how += f" x {sig.size_scale:.0%}"
         used = sum(o.margin * o.remaining for o in self.trades if o.status == "open")
-        free = max(equity - used, 0.0)
+        free = max(equity - used, 0.0) if self.cfg.share_margin else equity
         if notional / lev > free:
             notional = free * lev
             how += ", cut to free margin"

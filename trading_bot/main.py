@@ -300,7 +300,9 @@ def cmd_copy(args: argparse.Namespace) -> int:
             return 1
         config = CopyConfig.from_settings(get_settings())
         if args.history:
-            print("\nTEST ON HIS OLD POSTS (not bought: shows how copying him would have gone)")
+            config.share_margin = False
+            print("\nTEST ON HIS OLD POSTS (not bought: shows how copying him would have gone; "
+                  "every trade sized from the start amount)")
         else:
             config.live_since = get_live_since()
             if config.live_since is None:
