@@ -29,6 +29,15 @@ def save_message(chat_id: str, message_id: int, timestamp: datetime, text: str,
         return "same"
 
 
+def delete_chat_posts(chat_id: str) -> int:
+    """Forget every stored post from one chat (before a fresh fetch)."""
+    with session_scope() as db:
+        rows = list(db.scalars(select(CopyMessage).where(CopyMessage.chat_id == str(chat_id))))
+        for row in rows:
+            db.delete(row)
+        return len(rows)
+
+
 def load_posts(chat_id: Optional[str] = None) -> List[Post]:
     """All stored posts (optionally one chat), oldest first."""
     init_db()

@@ -240,9 +240,10 @@ def _print_copy_report(result) -> None:
 def cmd_copy(args: argparse.Namespace) -> int:
     from .copytrade.parser import parse_signal
 
-    if args.copy_cmd in ("login", "chats", "authors", "backfill", "listen"):
+    if args.copy_cmd in ("login", "chats", "authors", "topics", "backfill", "listen"):
         from .copytrade.telegram_reader import run
-        run(args.copy_cmd, days=getattr(args, "days", 90), limit=getattr(args, "limit", 500))
+        run(args.copy_cmd, days=getattr(args, "days", 90), limit=getattr(args, "limit", 500),
+            fresh=getattr(args, "fresh", False))
         return 0
     if args.copy_cmd == "parse":
         sig = parse_signal(" ".join(args.text))
@@ -326,8 +327,11 @@ def build_parser() -> argparse.ArgumentParser:
     csub.add_parser("chats", help="list your chats with their ids")
     au = csub.add_parser("authors", help="most active senders in COPY_CHAT")
     au.add_argument("--limit", type=int, default=500)
+    tp = csub.add_parser("topics", help="topics in COPY_CHAT and how many posts he has in each")
+    tp.add_argument("--limit", type=int, default=1000)
     bf = csub.add_parser("backfill", help="fetch his past posts")
     bf.add_argument("--days", type=int, default=90)
+    bf.add_argument("--fresh", action="store_true", help="forget earlier fetched posts first")
     csub.add_parser("listen", help="save his new posts as they arrive")
     im = csub.add_parser("import", help="import a Telegram Desktop export (result.json)")
     im.add_argument("file")

@@ -193,11 +193,12 @@ here sends Telegram messages or places real orders.
      `python -m trading_bot.main copy import result.json --author "<his name>"`.
    - **Telegram API** (also follows new posts live): create an app at
      <https://my.telegram.org>, fill `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
-     `TELEGRAM_PHONE`, `COPY_CHAT`, `COPY_AUTHOR` in `.env`, then:
+     `TELEGRAM_PHONE`, `COPY_CHAT`, `COPY_AUTHOR` (and `COPY_TOPIC` for a group with topics) in `.env`, then:
      ```bash
      python -m trading_bot.main copy login          # once; asks for the Telegram code
      python -m trading_bot.main copy chats          # find the group
      python -m trading_bot.main copy authors        # find his id/username
+     python -m trading_bot.main copy topics         # group with topics: find his trade topic
      python -m trading_bot.main copy backfill --days 90
      python -m trading_bot.main copy listen         # keep running to follow new posts
      ```

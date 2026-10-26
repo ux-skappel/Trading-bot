@@ -87,6 +87,7 @@ class Settings:
     telegram_phone: str = field(default_factory=lambda: _str("TELEGRAM_PHONE"))
     copy_chat: str = field(default_factory=lambda: _str("COPY_CHAT"))
     copy_author: str = field(default_factory=lambda: _str("COPY_AUTHOR"))
+    copy_topic: str = field(default_factory=lambda: _str("COPY_TOPIC"))
     copy_start_equity: float = field(default_factory=lambda: float(_str("COPY_START_EQUITY", "10000")))
     copy_default_margin_pct: float = field(
         default_factory=lambda: float(_str("COPY_DEFAULT_MARGIN_PCT", "0.10")))
