@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from ..config import get_settings
 from ..storage.database import init_db
@@ -78,15 +78,22 @@ async def _forum_topics(client, entity) -> list:
     return [(t.id, getattr(t, "title", "?")) for t in result.topics]
 
 
-async def _resolve_topic(client, entity, topic: str) -> Optional[int]:
-    if not topic:
-        return None
-    if topic.isdigit():
-        return int(topic)
-    for topic_id, title in await _forum_topics(client, entity):
-        if topic.lower() in title.lower():
-            return topic_id
-    raise SystemExit(f"Topic {topic!r} not found. Run `python -m trading_bot.main copy topics`.")
+async def _resolve_topics(client, entity, topics: str) -> List[int]:
+    """Topic ids from COPY_TOPIC: ids or titles, comma-separated ([] = whole chat)."""
+    wanted = [t.strip() for t in (topics or "").split(",") if t.strip()]
+    if not wanted:
+        return []
+    known = await _forum_topics(client, entity)
+    ids = []
+    for topic in wanted:
+        if topic.isdigit():
+            ids.append(int(topic))
+            continue
+        match = [tid for tid, title in known if topic.lower() in title.lower()]
+        if not match:
+            raise SystemExit(f"Topic {topic!r} not found. Run `python -m trading_bot.main copy topics`.")
+        ids.append(match[0])
+    return ids
 
 
 def _topic_of(msg) -> int:
@@ -169,34 +176,38 @@ async def _list_topics(client, chat: str, author: str, limit: int = 1000) -> Non
         print(f"{topic_id:>8}  {his.get(topic_id, 0):>5}  {images.get(topic_id, 0):>11}  {title}")
 
 
-async def _backfill(client, chat: str, author: str, topic: str, days: int, fresh: bool) -> None:
+async def _backfill(client, chat: str, author: str, topics: str, days: int, fresh: bool) -> None:
     entity = await _resolve_chat(client, chat)
     who = await _resolve_author(client, entity, author)
-    topic_id = await _resolve_topic(client, entity, topic)
+    topic_ids = await _resolve_topics(client, entity, topics)
     if fresh:
         removed = delete_chat_posts(str(entity.id))
         print(f"Removed {removed} previously fetched posts.")
     since = datetime.utcnow() - timedelta(days=days)
-    counts = {"new": 0, "edited": 0, "same": 0}
-    images_only = 0
-    if topic_id is not None:
-        messages = client.iter_messages(entity, reply_to=topic_id)
-    else:
-        messages = client.iter_messages(entity, from_user=who)
-    async for msg in messages:
-        if _utc(msg.date) < since:
-            break
-        if who is not None and msg.sender_id != who.id:
-            continue
-        if not msg.message:
-            images_only += msg.media is not None
-            continue
-        counts[_save(entity.id, msg)] += 1
-    where = f" in topic {topic_id}" if topic_id is not None else ""
-    print(f"Fetched {sum(counts.values())} posts{where} from the last {days} days "
-          f"({counts['new']} new, {counts['edited']} edited).")
-    if images_only:
-        print(f"{images_only} posts were images without text: those can't be read yet.")
+    for topic_id in topic_ids or [None]:
+        counts = {"new": 0, "edited": 0, "same": 0}
+        images_only = 0
+        if topic_id is None:
+            messages = client.iter_messages(entity, from_user=who)
+        elif topic_id == GENERAL_TOPIC:
+            messages = client.iter_messages(entity, from_user=who)   # General has no thread to open
+        else:
+            messages = client.iter_messages(entity, reply_to=topic_id)
+        async for msg in messages:
+            if _utc(msg.date) < since:
+                break
+            if who is not None and msg.sender_id != who.id:
+                continue
+            if topic_id == GENERAL_TOPIC and _topic_of(msg) != GENERAL_TOPIC:
+                continue
+            if not msg.message:
+                images_only += msg.media is not None
+                continue
+            counts[_save(entity.id, msg)] += 1
+        where = f" in topic {topic_id}" if topic_id is not None else ""
+        extra = f", {images_only} images without text skipped" if images_only else ""
+        print(f"Fetched {sum(counts.values())} posts{where} from the last {days} days "
+              f"({counts['new']} new{extra}).")
 
 
 async def _listen(client, chat: str, author: str, topic: str) -> None:
@@ -204,14 +215,14 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
 
     entity = await _resolve_chat(client, chat)
     who = await _resolve_author(client, entity, author)
-    topic_id = await _resolve_topic(client, entity, topic)
+    topic_ids = await _resolve_topics(client, entity, topic)
     kwargs = {"chats": entity}
     if who is not None:
         kwargs["from_users"] = who
 
     async def on_message(event) -> None:
         msg = event.message
-        if topic_id is not None and _topic_of(msg) != topic_id:
+        if topic_ids and _topic_of(msg) not in topic_ids:
             return
         stamp = _utc(msg.date).strftime("%Y-%m-%d %H:%M")
         if not msg.message:
@@ -223,7 +234,7 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
 
     client.add_event_handler(on_message, events.NewMessage(**kwargs))
     client.add_event_handler(on_message, events.MessageEdited(**kwargs))
-    where = f", topic {topic_id}" if topic_id is not None else ""
+    where = f", topics {', '.join(map(str, topic_ids))}" if topic_ids else ""
     print(f"Listening (read-only{where}). New posts are saved and paper-copied in the dashboard. "
           "Ctrl+C to stop.")
     await client.run_until_disconnected()

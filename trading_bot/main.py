@@ -245,6 +245,19 @@ def cmd_copy(args: argparse.Namespace) -> int:
         run(args.copy_cmd, days=getattr(args, "days", 90), limit=getattr(args, "limit", 500),
             fresh=getattr(args, "fresh", False))
         return 0
+    if args.copy_cmd == "posts":
+        from .copytrade.store import load_posts
+        posts = load_posts()[-args.limit:]
+        if not posts:
+            print("No posts stored yet. Run `copy backfill` first.")
+            return 1
+        for post in posts:
+            sig = parse_signal(post.text)
+            print(f"\n--- {post.time:%Y-%m-%d %H:%M} UTC · message {post.message_id}"
+                  f"{' · reply to ' + str(post.reply_to) if post.reply_to else ''}")
+            print(post.text.strip())
+            print(f">>> {sig.summary()}")
+        return 0
     if args.copy_cmd == "parse":
         sig = parse_signal(" ".join(args.text))
         print(sig.summary())
@@ -337,6 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("file")
     im.add_argument("--author", help="his name or id as shown in the export")
     im.add_argument("--channel", action="store_true", help="every post in the export is his")
+    po = csub.add_parser("posts", help="print his stored posts and how each is understood")
+    po.add_argument("--limit", type=int, default=40)
     pa = csub.add_parser("parse", help="show how a post would be understood")
     pa.add_argument("text", nargs="+")
     csub.add_parser("report", help="replay his stored posts as paper trades")
