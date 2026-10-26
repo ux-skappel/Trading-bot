@@ -128,3 +128,42 @@ def test_fees_and_funding_are_charged():
     gross = 10_000 * 0.10
     assert t.pnl < gross
     assert t.pnl == pytest.approx(gross - 10_000 * 0.00095 - 11_000 * 0.00095, rel=1e-3)
+
+
+def test_two_trades_in_one_post_and_selling_one_by_reply():
+    data = {**minutes([100, 100, 101, 102, 103, 104], symbol="MU"),
+            **minutes([50, 50, 51, 52, 53, 54], symbol="WDC")}
+    posts = [post(0, "LONGER MICRON OG WESTERN NÅ 🔼🔼", mid=20), post(3, "SOLGT WESTERN 🤑", mid=21, reply=20)]
+    r = replay(posts, source(data), FREE)
+    mu, wdc = r.trades
+    assert (mu.symbol, wdc.symbol) == ("MU", "WDC")
+    assert wdc.status == "closed" and mu.status == "open"
+
+
+def test_sold_all_by_reply_to_an_already_closed_trade_is_ignored():
+    data = {**minutes([100, 100, 94, 93, 93, 93]), **minutes([50, 50, 51, 52, 53], symbol="ETH")}
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring og SL på $95", mid=30),
+             post(0, "ETH LONG 🔼 Bruker 5X giring og ingen SL", mid=31),
+             post(3, "SOLGT HELE NÅ", mid=32, reply=30)]
+    r = replay(posts, source(data), FREE)
+    sol, eth = r.trades
+    assert sol.fills[-1].reason == "stop" and eth.status == "open"
+    assert "already closed" in r.posts[-1].outcome
+
+
+def test_market_max_leverage_caps_his_leverage_and_sets_margin():
+    data = minutes([100, 100, 99, 97, 95.4, 95], symbol="AMD")
+    r = replay([post(0, "AMD LONG 🔼 Bruker 20X giring og ingen SL")], source(data), FREE,
+               max_leverage=lambda sym: 10.0)
+    t = r.trades[0]
+    assert t.leverage == 10 and "capped" in r.posts[0].outcome
+    # 10x market: 5% maintenance margin -> liquidated after a 5% drop.
+    assert t.liquidation_price == pytest.approx(95.0)
+    assert t.fills[-1].reason == "liquidated"
+
+
+def test_partial_position_scales_the_size():
+    data = minutes([100, 100, 101], symbol="TSLA")
+    t = replay([post(0, "TESLA LONG 🔼 Bruker 10X giring. Inne med 25% av full ønsket posisjon")],
+               source(data), FREE).trades[0]
+    assert t.notional == pytest.approx(10_000 * 0.25)

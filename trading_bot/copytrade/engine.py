@@ -15,6 +15,11 @@ pay, shorts receive), and isolated-margin liquidation at the maintenance
 margin. When a candle touches both a stop and a target, the stop is assumed
 to come first.
 
+Liquidation uses each market's own maintenance margin (half the initial
+margin at that market's max leverage), and his leverage is capped at the
+market max. A post can hold several instructions (two trades, or a close plus
+a new trade).
+
 Paper only: nothing here can place a real order.
 """
 
@@ -26,7 +31,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..analysis.support_resistance import Bar
-from .parser import Signal, parse_signal
+from .parser import Signal, parse_signals
 
 
 @dataclass
@@ -171,17 +176,20 @@ class CopyResult:
 
 
 CandleSource = Callable[[str, datetime], Tuple[List[Bar], str]]
+MaxLeverage = Callable[[str], Optional[float]]
 
 
 class CopyEngine:
     """Event-by-event paper replay of the trader's posts."""
 
-    def __init__(self, candles: CandleSource, config: Optional[CopyConfig] = None) -> None:
+    def __init__(self, candles: CandleSource, config: Optional[CopyConfig] = None,
+                 max_leverage: Optional[MaxLeverage] = None) -> None:
         self.get_candles = candles
+        self.max_leverage = max_leverage
         self.cfg = config or CopyConfig()
         self.cash = self.cfg.start_equity
         self.trades: List[CopyTrade] = []
-        self.by_message: Dict[int, CopyTrade] = {}
+        self.by_message: Dict[int, List[CopyTrade]] = {}   # post -> trades it opened or updated
         self.events: List[Tuple[datetime, float]] = []
         self.outcomes: List[PostOutcome] = []
         self._bars: Dict[str, List[Bar]] = {}
@@ -245,6 +253,9 @@ class CopyEngine:
         else:
             notional = self.cfg.default_margin_pct * equity * lev
             how = f"default {self.cfg.default_margin_pct:.0%} margin"
+        if sig.size_scale != 1.0:
+            notional *= sig.size_scale
+            how += f" x {sig.size_scale:.0%}"
         used = sum(o.margin * o.remaining for o in self.trades if o.status == "open")
         free = max(equity - used, 0.0)
         if notional / lev > free:
@@ -339,10 +350,19 @@ class CopyEngine:
     def _active(self) -> List[CopyTrade]:
         return [t for t in self.trades if t.status in ("pending", "open")]
 
+    def _link(self, message_id: int, trade: CopyTrade) -> None:
+        linked = self.by_message.setdefault(message_id, [])
+        if trade not in linked:
+            linked.append(trade)
+
     def _targets_for(self, post: Post, sig: Signal, statuses: Tuple[str, ...]) -> Tuple[List[CopyTrade], str]:
         if post.reply_to and post.reply_to in self.by_message:
-            trade = self.by_message[post.reply_to]
-            return ([trade] if trade.status in statuses else []), "reply"
+            linked = [t for t in self.by_message[post.reply_to] if t.status in statuses]
+            if not sig.symbol:
+                return linked, "reply"
+            named = [t for t in linked if t.symbol == sig.symbol]
+            if named:
+                return named, "reply"
         matches = [t for t in self.trades if t.status in statuses]
         if sig.symbol:
             return [t for t in matches if t.symbol == sig.symbol], sig.symbol
@@ -351,9 +371,8 @@ class CopyEngine:
     def handle(self, post: Post) -> None:
         for trade in self._active():
             self._advance(trade, post.time)
-        sig = parse_signal(post.text)
-        outcome = self._apply(post, sig)
-        self.outcomes.append(PostOutcome(post, sig, outcome))
+        for sig in parse_signals(post.text):
+            self.outcomes.append(PostOutcome(post, sig, self._apply(post, sig)))
 
     def _apply(self, post: Post, sig: Signal) -> str:
         if sig.action == "info":
@@ -364,7 +383,7 @@ class CopyEngine:
             pending, how = self._targets_for(post, sig, ("pending",))
             for t in pending:
                 t.status, t.note = "cancelled", "cancelled by his post"
-                self.by_message[post.message_id] = t
+                self._link(post.message_id, t)
             return f"cancelled {', '.join(f'#{t.number}' for t in pending)}" if pending else "nothing pending to cancel"
         trades, how = self._targets_for(post, sig, ("open",))
         if not trades:
@@ -381,7 +400,7 @@ class CopyEngine:
             return f"ignored: no open position{' for ' + sig.symbol if sig.symbol else ''}"
         done = []
         for t in trades:
-            self.by_message[post.message_id] = t
+            self._link(post.message_id, t)
             if sig.action == "close":
                 price = self._price_at(t.symbol, post.time)
                 if price is None:
@@ -402,12 +421,19 @@ class CopyEngine:
         number = len(self.trades) + 1
         trade = CopyTrade(number, post.message_id, sig.symbol, sig.side, sig, post.time,
                           leverage=sig.leverage or 1.0, mm=self.cfg.maintenance_margin)
+        market_max = self.max_leverage(sig.symbol) if self.max_leverage else None
+        capped = ""
+        if market_max:
+            trade.mm = 1 / (2 * market_max)
+            if trade.leverage > market_max:
+                capped = f" (his {trade.leverage:g}x capped to the market max {market_max:g}x)"
+                trade.leverage = market_max
         trade.stop = trade.initial_stop = sig.stop_loss
         trade.targets = list(sig.take_profits)
         if sig.entry_low is not None:
             trade.his_entry = (sig.entry_low + sig.entry_high) / 2
         self.trades.append(trade)
-        self.by_message[post.message_id] = trade
+        self._link(post.message_id, trade)
         if not self._load(sig.symbol, post.time):
             trade.status, trade.note = "skipped", f"no price data for {sig.symbol}"
             return f"#{number} skipped: no price data for {sig.symbol}"
@@ -421,12 +447,12 @@ class CopyEngine:
         if trade.his_entry is None:
             trade.his_entry = price
             self._open(trade, bar.timestamp, price)
-            return f"#{number} opened at {price:g} (market){self._size_note(trade)}"
+            return f"#{number} opened at {price:g} (market){self._size_note(trade)}{capped}"
         d = trade.direction
         edge = sig.entry_high if d == 1 else sig.entry_low
         if d * (price - edge) <= edge * self.cfg.max_slippage_pct:
             self._open(trade, bar.timestamp, price)
-            return f"#{number} opened at {price:g} (his entry {self._entry_text(sig)}){self._size_note(trade)}"
+            return f"#{number} opened at {price:g} (his entry {self._entry_text(sig)}){self._size_note(trade)}{capped}"
         trade.limit_price = edge
         trade.status = "pending"
         return (f"#{number} waiting for {edge:g}: price {price:g} ran more than "
@@ -457,9 +483,9 @@ class CopyEngine:
 
 
 def replay(posts: List[Post], candles: CandleSource, config: Optional[CopyConfig] = None,
-           now: Optional[datetime] = None) -> CopyResult:
+           now: Optional[datetime] = None, max_leverage: Optional[MaxLeverage] = None) -> CopyResult:
     """Run all posts (any order) through a fresh engine."""
-    engine = CopyEngine(candles, config)
+    engine = CopyEngine(candles, config, max_leverage)
     for post in sorted(posts, key=lambda p: (p.time, p.message_id)):
         engine.handle(post)
     return engine.finish(now)

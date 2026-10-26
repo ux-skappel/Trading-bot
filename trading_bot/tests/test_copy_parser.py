@@ -113,3 +113,69 @@ def test_numbered_targets_on_one_line():
 def test_summary_is_readable():
     s = parse_signal("LONG $SOL entry 142 SL 138 TP 150 10x")
     assert s.summary() == "OPEN LONG SOL · entry 142 · SL 138 · TP 150 · 10x"
+
+
+# --- Headline style: "NAME LONG/SHORT", leverage + SL in the body (made-up examples) ---
+
+from trading_bot.copytrade.parser import parse_signals
+
+
+@pytest.mark.parametrize("text,symbol,side,stop,lev", [
+    ("APPLE LONG 🔼\n\nSer sterk ut! Bruker 15X giring og SL på $251,5", "AAPL", "long", 251.5, 15),
+    ("NVIDIA SHORT 🔽\n\nBruker 10X giring og SL på $212", "NVDA", "short", 212, 10),
+    ("S&P500 LONG 🔼\n\nPå support! Bruker 50X giring og SL på $7480", "SP500", "long", 7480, 50),
+    ("GOLD LONG 🔼\n\nOversolgt. Bruker 25X giring og ingen SL", "GOLD", "long", None, 25),
+    ("ETH SHORT 🔽\n\nRisky! Bruker 40X giring og SL på $2.65K", "ETH", "short", 2650, 40),
+    ("MICRON LONG 🔼\n\nBruker 10X giring og SL $118", "MU", "long", 118, 10),
+])
+def test_headline_posts(text, symbol, side, stop, lev):
+    s = parse_signal(text)
+    assert (s.action, s.symbol, s.side, s.stop_loss, s.leverage) == ("open", symbol, side, stop, lev)
+    assert s.market
+
+
+def test_two_trades_in_one_post():
+    sigs = parse_signals("LONGER MICRON OG WESTERN NÅ 🔼🔼")
+    assert [(s.action, s.symbol, s.side) for s in sigs] == [("open", "MU", "long"), ("open", "WDC", "long")]
+
+
+def test_partial_position_size():
+    s = parse_signal("TESLA LONG 🔼\n\nBruker 10X giring og ingen SL ennå\n\nInne med 25% av full ønsket posisjon")
+    assert s.symbol == "TSLA" and s.size_scale == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("text,symbol,fraction", [
+    ("SOLGT HELE NÅ 🔼🤑", None, 1.0),
+    ("SOLGT WESTERN 🔼🤑", "WDC", 1.0),
+    ("Solgt halvparten av TESLA", "TSLA", 0.5),
+])
+def test_norwegian_sells(text, symbol, fraction):
+    s = parse_signal(text)
+    assert (s.action, s.symbol, s.close_fraction) == ("close", symbol, fraction)
+
+
+def test_stop_in_profit_moves_the_stop():
+    s = parse_signal("BOOM 🔽🔽\n\nSL i profitt på $81.2K")
+    assert s.action == "move_sl" and s.new_stop == 81200 and s.symbol is None
+
+
+def test_setting_a_stop_later():
+    s = parse_signal("SL på $355 nå")
+    assert s.action == "move_sl" and s.new_stop == 355
+
+
+@pytest.mark.parametrize("text", [
+    "Ny uke med rapporter 👀\nTirsdag: Netflix\nKommer tilbake til om jeg går long/short når vi nærmer oss",
+    "Bruk koden ABCDE for rabatt. Kjøper tilgang til en stor konto og består testen",
+    "HØYERE 🔼🔼🔼🔼",
+    "For enkelt\n\nHøyere 🔼🤑",
+    "Mange nye medlemmer i gruppa nå 🎉🔼",
+    "Kjører 1X $10,000 eval giveaway, reager på denne meldingen",
+])
+def test_his_chatter_is_not_traded(text):
+    assert all(s.action == "info" for s in parse_signals(text)), parse_signals(text)
+
+
+def test_sell_then_new_trade_in_one_post():
+    sigs = parse_signals("SOLGT TESLA 🤑 og LONGER NVIDIA nå 🔼")
+    assert [(s.action, s.symbol) for s in sigs] == [("close", "TSLA"), ("open", "NVDA")]

@@ -213,6 +213,8 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
 async def _listen(client, chat: str, author: str, topic: str) -> None:
     from telethon import events  # type: ignore
 
+    print("Catching up on the last 3 days first (in case the computer was off or asleep)...")
+    await _backfill(client, chat, author, topic, days=3, fresh=False)
     entity = await _resolve_chat(client, chat)
     who = await _resolve_author(client, entity, author)
     topic_ids = await _resolve_topics(client, entity, topic)

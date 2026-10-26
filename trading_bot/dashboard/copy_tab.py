@@ -29,7 +29,8 @@ SETUP = """
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _replay(posts, config: CopyConfig) -> CopyResult:
-    return replay(posts, CandleFeed().candles, config)
+    feed = CandleFeed()
+    return replay(posts, feed.candles, config, max_leverage=feed.max_leverage)
 
 
 def _parser_box() -> None:

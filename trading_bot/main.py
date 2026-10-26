@@ -284,7 +284,9 @@ def cmd_copy(args: argparse.Namespace) -> int:
         if not posts:
             print("No posts stored yet. Run `copy backfill` (Telegram API) or `copy import` (export file).")
             return 1
-        _print_copy_report(replay(posts, CandleFeed().candles, CopyConfig.from_settings(get_settings())))
+        feed = CandleFeed()
+        _print_copy_report(replay(posts, feed.candles, CopyConfig.from_settings(get_settings()),
+                                  max_leverage=feed.max_leverage))
         return 0
     return 2
 

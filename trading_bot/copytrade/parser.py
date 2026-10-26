@@ -1,20 +1,23 @@
-"""Turn a trader's free-text post into a structured trade signal.
+"""Turn a trader's free-text post into structured trade signals.
 
-Understands the common crypto-signal formats in English and Norwegian:
+Built around headline-style posts, with classic signal formats as a fallback:
 
+    GOOGLE LONG 🔼  Bruker 20X giring og SL på $327,3
+    LONGER BLOOM OG WESTERN NÅ            (two trades)
+    SOLGT HELE NÅ · SOLGT WESTERN · SL i profitt på $79900
     LONG $SOL  Entry 142-144  SL 138  TP1 150 TP2 158  10x  risk 1%
-    Kjøper BTC nå, stopp 63 500, mål 68 000 / 70 000
-    Move SL to entry  ·  Flytt stop til 145  ·  Close half SOL  ·  Lukker alt BTC
+    Move SL to entry · Flytt stop til 145 · Close half SOL · Lukker alt BTC
 
-Anything that isn't clearly a trade instruction comes back as ``info`` and is
-never traded. Every decision is explained in ``Signal.notes``.
+A trade needs a coin/stock right next to LONG/SHORT (or a classic post with
+entry/SL/TP labels), so chatter like "går long/short når vi nærmer oss" or a
+promo code is never traded. Every decision is explained in ``Signal.notes``.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 NUM = r"\d+(?:[.,]\d+)*"
 
@@ -33,10 +36,26 @@ SAFE_LOWER = {
     "sui", "arb", "inj", "tia", "sei", "atom", "aave", "matic", "shib", "trx", "kas", "ena",
     "ondo", "fet", "tao", "rndr", "hbar", "xlm", "fartcoin", "popcat", "pengu",
 }
-COIN_NAMES = {
-    "bitcoin": "BTC", "ethereum": "ETH", "ether": "ETH", "solana": "SOL", "ripple": "XRP",
-    "dogecoin": "DOGE", "cardano": "ADA", "avalanche": "AVAX", "chainlink": "LINK",
+# Names -> the ticker Liquid/Hyperliquid uses (stocks and indices trade on the "xyz" market).
+NAMES = {
+    "BITCOIN": "BTC", "ETHEREUM": "ETH", "ETHER": "ETH", "SOLANA": "SOL", "RIPPLE": "XRP",
+    "DOGECOIN": "DOGE", "CARDANO": "ADA", "AVALANCHE": "AVAX", "CHAINLINK": "LINK",
+    "GOOGLE": "GOOGL", "ALPHABET": "GOOGL", "TESLA": "TSLA", "NVIDIA": "NVDA", "APPLE": "AAPL",
+    "AMAZON": "AMZN", "MICROSOFT": "MSFT", "FACEBOOK": "META", "NETFLIX": "NFLX",
+    "ROBINHOOD": "HOOD", "COINBASE": "COIN", "MICROSTRATEGY": "MSTR", "STRATEGY": "MSTR",
+    "PALANTIR": "PLTR", "INTEL": "INTC", "SANDISK": "SNDK", "REDDIT": "RDDT", "BLOOM": "BE",
+    "WESTERN": "WDC", "MICRON": "MU", "BROADCOM": "AVGO", "ORACLE": "ORCL", "SPACEX": "SPCX",
+    "ANTHROPIC": "ANT", "COSTCO": "COST", "RIVIAN": "RIVN", "ALIBABA": "BABA",
+    "GAMESTOP": "GME", "SAMSUNG": "SMSN", "HYNIX": "SKHX", "TSMC": "TSM", "CIRCLE": "CRCL",
+    "GULL": "GOLD", "SØLV": "SILVER", "SOLV": "SILVER", "OLJE": "CL", "OIL": "CL",
+    "BRENT": "BRENTOIL", "S&P500": "SP500", "SP500": "SP500", "SPX500": "SP500",
+    "SPX": "SP500", "US500": "SP500", "NASDAQ": "XYZ100", "NAS100": "XYZ100",
 }
+MULTIWORD = [  # joined before matching so "WESTERN DIGITAL LONG" works
+    (r"western\s+digital", "WDC"), (r"s\s*&\s*p\s*500", "S&P500"), (r"sk\s+hynix", "SKHX"),
+    (r"bloom\s+energy", "BE"), (r"nasdaq\s*100", "XYZ100"),
+]
+# Words that are never a coin/stock even in capitals (English + Norwegian).
 NOT_SYMBOLS = {
     "LONG", "SHORT", "TP", "TP1", "TP2", "TP3", "TP4", "SL", "ENTRY", "BUY", "SELL", "USD",
     "USDT", "USDC", "PERP", "SPOT", "LEV", "CROSS", "ISO", "ISOLATED", "STOP", "TARGET", "RISK",
@@ -47,8 +66,12 @@ NOT_SYMBOLS = {
     "GN", "TA", "FA", "RR", "PM", "AM", "UTC", "CET", "EST", "NY", "EU", "UK", "NO", "YES",
     "VIP", "ALERT", "NEWS", "WAGMI", "NGMI", "IMO", "IMHO", "FYI", "BTW", "ASAP", "SWING",
     "SCALP", "HALF", "NOT", "DO", "DONT", "WAIT", "HOLD", "TPS", "SLS", "LEVELS", "ZONE",
+    "HELE", "ALT", "RESTEN", "HALVPARTEN", "HALVE", "HALV", "HER", "FOR", "LETT", "ENKELT",
+    "HØYERE", "LAVERE", "SOLGT", "KJØPT", "BOOM", "RISKY", "INNE", "MED", "PÅ", "SUPPORT",
+    "RESISTANCE", "LONGER", "SHORTER", "GIRING", "ENNÅ", "INGEN", "MEGA", "BRA", "UT", "SER",
+    "NY", "UKE", "OPP", "NED", "JEG", "VI", "DU", "ER", "DET", "SOM", "MEN", "AV", "TIL",
+    "FRA", "NOE", "LITT", "MYE", "BARE", "OGSÅ", "GO", "LETS", "LET'S",
 }
-STOCKS_OK = re.compile(r"^[A-Z]{2,5}$")
 
 
 @dataclass
@@ -66,6 +89,7 @@ class Signal:
     leverage: Optional[float] = None
     risk_pct: Optional[float] = None     # fraction of the account lost at the stop
     size_pct: Optional[float] = None     # fraction of the account used as margin
+    size_scale: float = 1.0              # "in with 33% of the full position" -> 0.33
     close_fraction: float = 1.0          # for close: share of the position to close
     new_stop: Optional[float] = None     # for move_sl
     stop_to_entry: bool = False          # for move_sl: break-even
@@ -90,13 +114,15 @@ class Signal:
                 parts.append(f"risk {self.risk_pct:.2%}")
             if self.size_pct:
                 parts.append(f"size {self.size_pct:.2%}")
+            if self.size_scale != 1.0:
+                parts.append(f"{self.size_scale:.0%} of normal size")
             return " · ".join(parts)
         if self.action == "close":
             what = "all" if self.close_fraction >= 1 else f"{self.close_fraction:.0%}"
-            return f"CLOSE {what} {self.symbol or '(latest position)'}"
+            return f"CLOSE {what} {self.symbol or '(replied/latest position)'}"
         if self.action == "move_sl":
             to = "entry (break-even)" if self.stop_to_entry else f"{self.new_stop:g}"
-            return f"MOVE SL {self.symbol or '(latest position)'} to {to}"
+            return f"MOVE SL {self.symbol or '(replied/latest position)'} to {to}"
         if self.action == "cancel":
             return f"CANCEL {self.symbol or '(latest pending entry)'}"
         return "not a trade instruction"
@@ -162,27 +188,79 @@ def _take_profits(text: str) -> List[float]:
     return values
 
 
-def _symbol(text: str) -> Optional[str]:
+def normalize_symbol(token: str) -> Optional[str]:
+    """'GOOGLE' -> 'GOOGL', '$sol' -> 'SOL', 'HELE' -> None."""
+    tagged = token.startswith(("$", "#"))
+    t = token.strip().lstrip("$#").rstrip(".,!?:;)")
+    up = t.upper()
+    if up in NAMES:
+        return NAMES[up]
+    if not t or up in NOT_SYMBOLS:
+        return None
+    if not re.fullmatch(r"[A-Z0-9&]{2,10}", up) or up.isdigit():
+        return None
+    if tagged or up in KNOWN_COINS or t.isupper():
+        return up
+    return None
+
+
+def _known_symbol(text: str) -> Optional[str]:
+    """A $tagged ticker, known coin or known name — never a random capitalised word."""
     tagged = re.findall(r"[$#]([A-Za-z][A-Za-z0-9]{0,9})\b", text)
     if tagged:
-        return tagged[0].upper()
+        return normalize_symbol("$" + tagged[0])
+    for token in re.findall(r"[A-Za-zÆØÅæøå&][A-Za-z0-9ÆØÅæøå&]{0,13}", text):
+        up = token.upper()
+        if up in NAMES and token[0].isupper():
+            return NAMES[up]
+        if (token.isupper() and up in KNOWN_COINS) or token in SAFE_LOWER:
+            return up
+    return None
+
+
+def _symbol(text: str) -> Optional[str]:
+    """Best single coin/stock mention anywhere (classic formats)."""
+    tagged = re.findall(r"[$#]([A-Za-z][A-Za-z0-9]{0,9})\b", text)
+    if tagged:
+        return normalize_symbol("$" + tagged[0])
     pair = re.search(r"\b([A-Z0-9]{2,10})\s*(?:/|-)?\s*(?:USDT|USDC|USD|PERP)\b", text)
     if pair and pair.group(1) not in NOT_SYMBOLS:
         return pair.group(1)
-    for token in re.findall(r"\b[A-Za-z][A-Za-z0-9]{0,9}\b", text):
-        if (token.isupper() and token in KNOWN_COINS) or token in SAFE_LOWER:
-            return token.upper()
-    lower = text.lower()
-    for name, sym in COIN_NAMES.items():
-        if re.search(rf"\b{name}\b", lower):
-            return sym
+    for token in re.findall(r"[A-Za-zÆØÅæøå&][A-Za-z0-9ÆØÅæøå&]{0,13}", text):
+        up = token.upper()
+        if up in NAMES and (token.isupper() or token[0].isupper()):
+            return NAMES[up]
+        if (token.isupper() and up in KNOWN_COINS) or token in SAFE_LOWER:
+            return up
     for token in re.findall(r"\b[A-Z]{2,5}\b", text):
-        if token not in NOT_SYMBOLS and STOCKS_OK.match(token):
+        if token not in NOT_SYMBOLS:
             return token
     return None
 
 
+_SYMS = r"[$#]?[\w&.]+(?:\s+(?:og|and|&|\+)\s+[$#]?[\w&.]+)*"
+HEADLINE_SYMBOL_FIRST = re.compile(rf"(?P<syms>{_SYMS})\s+(?P<side>long|short)\b", re.IGNORECASE)
+HEADLINE_SIDE_FIRST = re.compile(
+    rf"\b(?P<side>long(?:er)?|short(?:er)?|kjøper|buy(?:ing)?)\s+(?P<syms>{_SYMS})", re.IGNORECASE)
+
+
+def _headline(text: str):
+    """(side, [symbols]) for 'GOOGLE LONG' / 'LONGER BLOOM OG WESTERN' / 'LONG $SOL'."""
+    for pattern in (HEADLINE_SYMBOL_FIRST, HEADLINE_SIDE_FIRST):
+        for m in pattern.finditer(text):
+            side = "short" if m.group("side").lower().startswith("short") else "long"
+            tokens = re.split(r"\s+(?:og|and|&|\+)\s+", m.group("syms"), flags=re.IGNORECASE)
+            if pattern is HEADLINE_SYMBOL_FIRST:
+                tokens = [tokens[0].split()[-1]] + tokens[1:] if tokens else tokens
+            symbols = [s for s in (normalize_symbol(t) for t in tokens) if s]
+            if symbols and len(symbols) == len(tokens):
+                return side, list(dict.fromkeys(symbols))
+    return None, []
+
+
 def _side(lower: str, has_levels: bool) -> Optional[str]:
+    if re.search(r"long\s*/\s*short|short\s*/\s*long", lower):
+        return None
     if re.search(r"\bshort\w*\b|📉|🔴", lower):
         return "short"
     if re.search(r"\blong\w*\b|\bbuy\w*\b|\bkjøp\w*|📈|🟢", lower):
@@ -196,85 +274,53 @@ def _first(pattern: str, text: str) -> Optional[re.Match]:
     return re.search(pattern, text, re.IGNORECASE)
 
 
-def parse_signal(text: str) -> Signal:
-    """Parse one post. Returns ``Signal(action='info')`` when it isn't an instruction."""
-    if not text or not text.strip():
-        return Signal("info", notes=["empty post"])
-    raw = _join_thousands(text)
-    lower = raw.lower()
-    symbol = _symbol(raw)
+CLOSE_WORDS = re.compile(
+    r"(?<!candle\s)(?<!candles\s)\b(?:close[ds]?|closing)\b"
+    r"(?!\s+(?:to|til|by|near|above|below|over|under|green|red|nok|inn)\b)"
+    r"|\b(?:solgt|selger|selg|sold|selling|exit(?:ed|ing)?|lukk\w*|stengt|cut(?:ting)?|kutt\w*|"
+    r"tok\s+profitt|tar\s+profitt|tatt\s+profitt|ute\s+av|out\s+of|"
+    r"take\s+(?:some\s+)?profits?\s+(?:now|here)|ta\s+(?:litt\s+)?gevinst|secur\w+\s+profits?)\b",
+    re.IGNORECASE)
+STOP_LEVEL = (r"(?:\bsl\b|stop[\s-]?loss|\bstop(?:p)?(?:[\s-]?loss)?\b|invalidation)\s*[:=@\-]?\s*"
+              r"(?:at|på|ved|under|below|over|above|rundt)?\s*\$?(" + NUM + r")(k)?")
 
-    if re.search(r"\b(tp\s*\d|target\s*\d|mål\s*\d)\s*(hit|reached|nådd|tatt|done|✅)", lower):
-        return Signal("info", symbol=symbol, notes=["target-hit announcement; targets are tracked from prices"])
 
-    if re.search(r"\b(cancel\w*|avbryt\w*|kanseller\w*|ignore\s+(this|the)\s+(signal|trade|entry))\b", lower):
-        return Signal("cancel", symbol=symbol, notes=["cancel pending entry"])
+def _close_signal(raw: str, lower: str, close: re.Match) -> Signal:
+    after = raw[close.end():close.end() + 80]
+    symbol = None
+    for token in re.findall(r"[$#]?[\w&.]+", after)[:6]:
+        symbol = normalize_symbol(token)
+        if symbol:
+            break
+    if symbol is None:
+        symbol = _known_symbol(raw)
+    sig = Signal("close", symbol=symbol)
+    pct = (re.search(r"(?<![+\-\d])(\d{1,3})\s*%\s*(?:of|av)\b", lower)
+           or re.search(r"\b(?:close|closing|lukk\w*|selger|solgt|sell\w*|take|ta)\b\D{0,15}?(?<![+\-\d])(\d{1,3})\s*%", lower))
+    if re.search(r"\b(half|halv\w*|50\s*%)", lower):
+        sig.close_fraction = 0.5
+    elif pct and 0 < int(pct.group(1)) < 100:
+        sig.close_fraction = int(pct.group(1)) / 100
+    elif re.search(r"\b(partial\w*|delvis|some|litt)\b", lower):
+        sig.close_fraction = 0.5
+        sig.notes.append("partial close without a size: assumed half")
+    sig.notes.append(f"close {sig.close_fraction:.0%}")
+    return sig
 
-    move = re.search(
-        r"\b(?:move|moving|flytt\w*|set|sett|juster\w*|trail)\s+(?:the\s+|my\s+)?(?:sl|stop(?:p)?(?:[\s-]?loss)?)\b"
-        r"|\b(?:sl|stop(?:p)?(?:[\s-]?loss)?)\s*(?:to|til|->|→|=|@)\s*(?:entry|be\b|break[\s-]?even|inngang|\$?" + NUM + ")",
-        lower,
-    )
-    if move:
-        sig = Signal("move_sl", symbol=symbol)
-        tail = lower[move.start():]
-        if re.search(r"\b(entry|be|break[\s-]?even|breakeven|inngang|kjøpspris)\b", tail):
-            sig.stop_to_entry = True
-            sig.notes.append("stop to entry (break-even)")
-            return sig
-        number = re.search(r"(?:to|til|->|→|=|@)\s*\$?(" + NUM + r")", tail)
-        if number:
-            sig.new_stop = to_float(number.group(1))
-            sig.notes.append(f"new stop {sig.new_stop:g}")
-            return sig
-        return Signal("info", symbol=symbol, notes=["mentions moving the stop but no new level found"])
 
-    stop_m = _first(
-        r"(?:\bsl\b|stop[\s-]?loss|\bstop(?:p)?(?:[\s-]?loss)?\b|invalidation)\s*[:=@\-]?\s*"
-        r"(?:at|på|ved|under|below|over|above|rundt)?\s*\$?(" + NUM + r")(k)?", raw)
-    tp_values = _take_profits(raw)
+def _open_details(sig: Signal, raw: str, lower: str) -> Signal:
     entry_m = _first(
         r"(?:\bentry(?:\s*zone)?\b|\bentries\b|\binngang\b|\bbuy\s*zone\b|\bep\b|\bkjøp\w*\s+(?:på|rundt|ved|i)\b|"
-        r"\bbuy\w*\s+(?:at|@|around)\b|\blong\w*\s+(?:at|@|fra|på)\b|\bshort\w*\s+(?:at|@|fra|på)\b|@)"
+        r"\bbuy\w*\s+(?:at|@|around)\b|\blong\w*\s+(?:at|@|fra)\b|\bshort\w*\s+(?:at|@|fra)\b|@)"
         r"\s*[:=]?\s*\$?(" + NUM + r")(k)?(?:\s*(?:-|–|~|to|til)\s*\$?(" + NUM + r")(k)?)?", raw)
-    has_levels = bool(stop_m or entry_m or tp_values)
-    side = _side(lower, has_levels)
-
-    # Not "close to support" or "candle closed above": those are chart talk.
-    close = re.search(
-        r"(?<!candle\s)(?<!candles\s)\b(?:close[ds]?|closing)\b"
-        r"(?!\s+(?:to|til|by|near|above|below|over|under|green|red|nok|inn)\b)"
-        r"|\b(?:exit(?:ed|ing)?|lukk\w*|stengt|selger\s+(?:alt|resten|halv\w*)|sold|cut(?:ting)?|kutt\w*|"
-        r"take\s+(?:some\s+)?profits?\s+(?:now|here)|ta\s+(?:litt\s+)?gevinst|secur\w+\s+profits?|out\s+of)\b",
-        lower)
-    if close and not (side and symbol and (stop_m or entry_m)):
-        sig = Signal("close", symbol=symbol)
-        # "30% of the position" / "close 30%", but not a "+12%" result.
-        pct = (re.search(r"(?<![+\-\d])(\d{1,3})\s*%\s*(?:of|av)\b", lower)
-               or re.search(r"\b(?:close|closing|lukk\w*|selger|sell\w*|take|ta)\b\D{0,15}?(?<![+\-\d])(\d{1,3})\s*%", lower))
-        if re.search(r"\b(half|halv\w*|50\s*%)\b", lower):
-            sig.close_fraction = 0.5
-        elif pct and 0 < int(pct.group(1)) < 100:
-            sig.close_fraction = int(pct.group(1)) / 100
-        elif re.search(r"\b(partial\w*|delvis|some|litt)\b", lower):
-            sig.close_fraction = 0.5
-            sig.notes.append("partial close without a size: assumed half")
-        sig.notes.append(f"close {sig.close_fraction:.0%}")
-        return sig
-
-    if not (side and symbol):
-        missing = [n for n, v in (("direction (long/short)", side), ("coin", symbol)) if not v]
-        return Signal("info", symbol=symbol, side=side, notes=["no trade: missing " + " and ".join(missing)])
-
-    sig = Signal("open", symbol=symbol, side=side)
     if entry_m:
-        k1 = 1000 if entry_m.group(2) else 1
-        lo = to_float(entry_m.group(1)) * k1
+        lo = to_float(entry_m.group(1)) * (1000 if entry_m.group(2) else 1)
         hi = to_float(entry_m.group(3)) * (1000 if entry_m.group(4) else 1) if entry_m.group(3) else lo
         sig.entry_low, sig.entry_high = min(lo, hi), max(lo, hi)
     if not entry_m or re.search(r"\b(market|cmp|now|nå|markedspris|here|her)\b", lower):
         sig.market = True
         sig.notes.append("enter at the current price")
+    stop_m = _first(STOP_LEVEL, raw)
     if stop_m:
         sig.stop_loss = to_float(stop_m.group(1)) * (1000 if stop_m.group(2) else 1)
 
@@ -286,18 +332,27 @@ def parse_signal(text: str) -> Signal:
             or _first(r"(" + NUM + r")\s*%\s*(?:risk|risiko)", lower))
     if risk:
         sig.risk_pct = to_float(risk.group(1)) / 100
-    size = (_first(r"\b(?:size|størrelse|margin|posisjon\w*)\s*[:=]?\s*(" + NUM + r")\s*%", lower)
+    size = (_first(r"\b(?:size|størrelse|margin)\s*[:=]?\s*(" + NUM + r")\s*%", lower)
             or _first(r"(" + NUM + r")\s*%\s*(?:of|av)\s*(?:the\s+|my\s+)?(?:portfolio|portefølje\w*|account|konto\w*|balance|saldo\w*)", lower))
     if size:
         sig.size_pct = to_float(size.group(1)) / 100
+    partial = (_first(r"\binne\s+med\s+(\d{1,3})\s*%", lower)
+               or _first(r"(\d{1,3})\s*%\s*(?:av|of)\s+(?:min\s+|my\s+)?(?:full\w*\s+)?(?:ønsket\s+|planned\s+|normal\s+|usual\s+)?posisjon\w*", lower)
+               or _first(r"(\d{1,3})\s*%\s*(?:of\s+)?(?:my\s+)?(?:full\s+)?(?:planned\s+|normal\s+|usual\s+)?position", lower))
+    if partial and 0 < int(partial.group(1)) < 100:
+        sig.size_scale = int(partial.group(1)) / 100
+        sig.notes.append(f"in with {sig.size_scale:.0%} of a full position")
+    elif re.search(r"\b(ikke\s+stor|liten|lite)\s+posisjon|\bsmall\s+position", lower):
+        sig.size_scale = 0.5
+        sig.notes.append("small position: half the normal size")
 
-    ref = sig.entry_high if side == "long" else sig.entry_low
+    side, ref = sig.side, (sig.entry_high if sig.side == "long" else sig.entry_low)
     if sig.stop_loss and ref:
         if (side == "long" and sig.stop_loss >= sig.entry_low) or (side == "short" and sig.stop_loss <= sig.entry_high):
             sig.notes.append(f"stop {sig.stop_loss:g} is on the wrong side of the entry: ignored")
             sig.stop_loss = None
     good_tps = []
-    for tp in tp_values:
+    for tp in _take_profits(raw):
         if ref and ((side == "long" and tp <= ref) or (side == "short" and tp >= ref)):
             sig.notes.append(f"target {tp:g} is on the wrong side of the entry: ignored")
         else:
@@ -306,3 +361,78 @@ def parse_signal(text: str) -> Signal:
     if sig.stop_loss is None:
         sig.notes.append("no stop loss in the post")
     return sig
+
+
+def parse_signals(text: str) -> List[Signal]:
+    """All instructions in one post (e.g. two trades, or a close plus a new trade)."""
+    if not text or not text.strip():
+        return [Signal("info", notes=["empty post"])]
+    raw = _join_thousands(text)
+    for pattern, replacement in MULTIWORD:
+        raw = re.sub(pattern, replacement, raw, flags=re.IGNORECASE)
+    lower = raw.lower()
+
+    if re.search(r"\b(tp\s*\d|target\s*\d|mål\s*\d)\s*(hit|reached|nådd|tatt|done|✅)", lower):
+        return [Signal("info", symbol=_symbol(raw), notes=["target-hit announcement; targets are tracked from prices"])]
+    if re.search(r"\b(cancel\w*|avbryt\w*|kanseller\w*|ignore\s+(this|the)\s+(signal|trade|entry))\b", lower):
+        return [Signal("cancel", symbol=_symbol(raw), notes=["cancel pending entry"])]
+
+    head_side, head_symbols = _headline(raw)
+    close = CLOSE_WORDS.search(raw)
+    out: List[Signal] = []
+    # A close word before the headline ("SOLGT TESLA, LONGER NVIDIA") is its own instruction;
+    # one after it is part of the trade's text.
+    if close and (not head_symbols or close.start() < _headline_start(raw)):
+        out.append(_close_signal(raw, lower, close))
+
+    if head_symbols:
+        for sym in head_symbols:
+            out.append(_open_details(Signal("open", symbol=sym, side=head_side), raw, lower))
+        if len(head_symbols) > 1:
+            for sig in out[-len(head_symbols):]:
+                sig.notes.append(f"one of {len(head_symbols)} trades in the same post")
+        return out
+    if out:
+        return out
+
+    move = re.search(
+        r"\b(?:move|moving|flytt\w*|set|sett|juster\w*|trail)\s+(?:the\s+|my\s+)?(?:sl|stop(?:p)?(?:[\s-]?loss)?)\b"
+        r"|\b(?:sl|stop(?:p)?(?:[\s-]?loss)?)\s*(?:to|til|->|→|=|@)\s*(?:entry|be\b|break[\s-]?even|inngang|\$?" + NUM + ")",
+        lower)
+    stop_level = _first(STOP_LEVEL, raw) or _first(r"\b(?:sl|stop\w*)\b[^\d$\n]{0,30}?\$?(" + NUM + r")(k)?", raw)
+    has_levels = bool(_first(r"\b(?:entry|inngang)\b", raw) or _take_profits(raw))
+    if move or (stop_level and not has_levels and not _side(lower, False)):
+        sig = Signal("move_sl", symbol=_symbol(raw) if re.search(r"[$#]\w|\b[A-Z]{2,5}\b", raw) else None)
+        tail = lower[move.start():] if move else lower
+        if re.search(r"\b(entry|be|break[\s-]?even|breakeven|inngang|kjøpspris)\b", tail):
+            sig.stop_to_entry = True
+            sig.notes.append("stop to entry (break-even)")
+            return [sig]
+        number = re.search(r"(?:to|til|->|→|=|@|på|at)\s*\$?(" + NUM + r")(k)?", tail) or stop_level
+        if number:
+            sig.new_stop = to_float(number.group(1)) * (1000 if number.group(2) else 1)
+            sig.notes.append(f"new stop {sig.new_stop:g}")
+            if sig.symbol and sig.symbol in NOT_SYMBOLS:
+                sig.symbol = None
+            return [sig]
+        return [Signal("info", notes=["mentions moving the stop but no new level found"])]
+
+    # Classic labelled signal (entry/SL/TP) without a headline.
+    stop_m = _first(STOP_LEVEL, raw)
+    if stop_m or has_levels:
+        side, symbol = _side(lower, True), _symbol(raw)
+        if side and symbol:
+            return [_open_details(Signal("open", symbol=symbol, side=side), raw, lower)]
+    side, symbol = _side(lower, False), _symbol(raw)
+    missing = [n for n, v in (("direction (long/short) next to the coin", side and symbol), ) if not v]
+    return [Signal("info", symbol=symbol, side=side, notes=["no trade: missing " + ", ".join(missing)])]
+
+
+def _headline_start(text: str) -> int:
+    starts = [m.start() for p in (HEADLINE_SYMBOL_FIRST, HEADLINE_SIDE_FIRST) for m in p.finditer(text)]
+    return min(starts) if starts else len(text)
+
+
+def parse_signal(text: str) -> Signal:
+    """The first instruction in a post (see ``parse_signals`` for all of them)."""
+    return parse_signals(text)[0]
