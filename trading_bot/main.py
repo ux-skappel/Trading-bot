@@ -34,6 +34,7 @@ def _configure_logging(level: str) -> None:
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
     )
+    logging.getLogger("telethon").setLevel(logging.WARNING)   # no per-download chatter
 
 
 def _print_safety_banner() -> None:

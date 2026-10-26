@@ -229,6 +229,8 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
             counts[_save(entity.id, msg)] += 1   # images too, so replies to them can be followed
             if await _read_image(entity.id, msg):
                 images_read += 1
+                if images_read % 25 == 0:
+                    print(f"  ...read {images_read} images so far", flush=True)
         where = f" in topic {topic_id}" if topic_id is not None else ""
         extra = f", {images_only} of them image-only" if images_only else ""
         if images_read:
