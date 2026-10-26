@@ -223,6 +223,13 @@ on, never open a new trade; if it names several open positions the bot
 doesn't guess. Replies to images are followed back to the original trade
 post. `copy images` shows what was read.
 
+**Sells posted in other topics.** `COPY_SELL_TOPICS` (e.g. his stocks and
+crypto discussion topics) are read too, but only for sells and stop updates,
+never buys, and a sell there that doesn't say what was sold (no coin, reply
+or picture) is ignored rather than guessed. The Copy trading tab lists
+positions open for more than 3 days without a sell, with whether they have a
+stop loss.
+
 Rules when his post leaves something open: enter at once if the price is
 within 1% of his entry, otherwise wait at his entry for 24 h; size by his risk
 % (with his stop), else his size %, else 10% of the account as margin; split

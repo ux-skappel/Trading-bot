@@ -80,6 +80,7 @@ class Post:
     reply_to: Optional[int] = None
     received_at: Optional[datetime] = None     # when the bot saw it
     image_text: Optional[str] = None           # text read from an attached image
+    sell_only: bool = False                    # from a discussion topic: never buy from it
 
 
 @dataclass
@@ -403,6 +404,8 @@ class CopyEngine:
                 return [t for t in matches if t.symbol == named[0]], "image"
             if len(named) > 1:
                 return [], "image: " + ", ".join(named)
+        if post.sell_only:
+            return [], "unclear"        # never guess from a discussion topic
         return matches[-1:], "latest"
 
     def act_time(self, post: Post) -> datetime:
@@ -422,6 +425,10 @@ class CopyEngine:
                                              f"image, kept so replies to it can be followed{seen}"))
             return
         for sig in parse_signals(post.text):
+            if post.sell_only and sig.action in ("open", "cancel"):
+                self.outcomes.append(PostOutcome(post, sig, "discussion topic: only his sells and stop "
+                                                            "updates count here, not bought"))
+                continue
             if sig.action == "open" and late > self.cfg.max_open_delay_minutes:
                 outcome = (f"missed: seen {late:.1f} min after he posted (limit "
                            f"{self.cfg.max_open_delay_minutes:g} min), not bought")
@@ -495,6 +502,9 @@ class CopyEngine:
             if earlier:
                 return f"ignored: no open {sig.symbol} position ({describe(earlier[-1])})"
             return f"ignored: no {sig.symbol} position was ever copied"
+        if post.sell_only:
+            return ("ignored: post in a discussion topic doesn't say what was sold "
+                    "(no coin, reply or picture), not guessing")
         return "ignored: no open position, and the post doesn't say what was sold"
 
     def _seen_price(self, post: Post, symbol: str) -> Optional[float]:

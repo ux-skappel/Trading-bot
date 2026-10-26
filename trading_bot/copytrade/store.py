@@ -9,7 +9,7 @@ from typing import Iterable, List, Optional
 from sqlalchemy import select
 
 from ..storage.database import init_db, session_scope
-from ..storage.models import CopyImageText, CopyMessage, CopyQuote, CopyState
+from ..storage.models import CopyImageText, CopyMessage, CopyQuote, CopySellOnly, CopyState
 from .engine import Post
 
 
@@ -46,9 +46,19 @@ def load_posts(chat_id: Optional[str] = None) -> List[Post]:
         if chat_id:
             query = query.where(CopyMessage.chat_id == str(chat_id))
         images = {(t.chat_id, t.message_id): t.text for t in db.scalars(select(CopyImageText))}
+        sell_only = {(s.chat_id, s.message_id) for s in db.scalars(select(CopySellOnly))}
         return [Post(r.message_id, r.timestamp, r.text, r.reply_to, r.fetched_at,
-                     images.get((r.chat_id, r.message_id)))
+                     images.get((r.chat_id, r.message_id)), (r.chat_id, r.message_id) in sell_only)
                 for r in db.scalars(query)]
+
+
+def mark_sell_only(chat_id: str, message_id: int) -> None:
+    """Flag a post from a discussion topic: only sells/stop updates count."""
+    with session_scope() as db:
+        exists = db.scalars(select(CopySellOnly).where(
+            CopySellOnly.chat_id == str(chat_id), CopySellOnly.message_id == message_id)).first()
+        if exists is None:
+            db.add(CopySellOnly(chat_id=str(chat_id), message_id=message_id))
 
 
 def save_image_text(chat_id: str, message_id: int, text: str) -> None:

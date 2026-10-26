@@ -165,7 +165,8 @@ def render(settings) -> None:
     if stale:
         st.warning(
             f"{len(stale)} position(s) open for more than 3 days without a sell from him: "
-            + ", ".join(f"#{t.number} {t.symbol} (since {t.entry_time:%m-%d})" for t in stale)
+            + ", ".join(f"#{t.number} {t.symbol} (since {t.entry_time:%m-%d}, "
+                        f"{'SL ' + format(t.stop, 'g') if t.stop else 'no SL'})" for t in stale)
             + ". He may have sold without a post the bot could link (another topic, or no reply/picture)."
         )
 

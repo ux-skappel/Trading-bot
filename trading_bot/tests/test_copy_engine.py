@@ -295,3 +295,29 @@ def test_history_test_sizes_each_trade_on_its_own():
     alone = replay(posts, source(data), CopyConfig(fee_pct=0, funding_pct_per_day=0, share_margin=False))
     assert shared.trades[1].status == "skipped"
     assert alone.trades[1].status == "open" and alone.trades[1].notional == pytest.approx(10_000)
+
+
+def test_discussion_topic_post_never_buys():
+    data = minutes([300] * 5, symbol="TSLA")
+    p = Post(130, T0 + timedelta(minutes=1), "TSLA LONG 🔼 Bruker 10X giring", sell_only=True)
+    r = replay([p], source(data), FREE)
+    assert r.trades == [] and "not bought" in r.posts[0].outcome
+
+
+def test_discussion_topic_sell_with_picture_closes_that_position():
+    data = {**minutes([300, 300, 305, 310, 315], symbol="TSLA"), **minutes([200] * 5, symbol="NVDA")}
+    posts = [post(0, "TESLA LONG 🔼 Bruker 10X giring", mid=131), post(0, "NVIDIA LONG 🔼 Bruker 10X giring", mid=132),
+             Post(133, T0 + timedelta(minutes=3, seconds=30), "SELGER HELE NÅ", sell_only=True,
+                  image_text="Liquid | TSLA | PERP 10x LONG | CURRENT RETURN | +50%")]
+    r = replay(posts, source(data), FREE)
+    tsla, nvda = r.trades
+    assert tsla.status == "closed" and nvda.status == "open"
+
+
+def test_discussion_topic_sell_without_coin_is_not_guessed():
+    data = {**minutes([300] * 5, symbol="TSLA"), **minutes([200] * 5, symbol="NVDA")}
+    posts = [post(0, "TESLA LONG 🔼 Bruker 10X giring", mid=134), post(0, "NVIDIA LONG 🔼 Bruker 10X giring", mid=135),
+             Post(136, T0 + timedelta(minutes=3, seconds=30), "SELGER HELE NÅ", sell_only=True)]
+    r = replay(posts, source(data), FREE)
+    assert all(t.status == "open" for t in r.trades)
+    assert "not guessing" in r.posts[-1].outcome

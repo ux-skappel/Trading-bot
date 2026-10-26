@@ -19,8 +19,8 @@ from ..storage.database import init_db
 from .parser import parse_signals
 from .prices import CandleFeed
 from .ocr import image_text
-from .store import (delete_chat_posts, get_live_since, has_image_text, save_image_text,
-                    save_message, save_snapshot, set_live_since)
+from .store import (delete_chat_posts, get_live_since, has_image_text, mark_sell_only,
+                    save_image_text, save_message, save_snapshot, set_live_since)
 
 logger = logging.getLogger(__name__)
 
@@ -199,15 +199,18 @@ async def _list_topics(client, chat: str, author: str, limit: int = 1000) -> Non
         print(f"{topic_id:>8}  {his.get(topic_id, 0):>5}  {images.get(topic_id, 0):>11}  {title}")
 
 
-async def _backfill(client, chat: str, author: str, topics: str, days: int, fresh: bool) -> None:
+async def _backfill(client, chat: str, author: str, topics: str, days: int, fresh: bool,
+                    sell_topics: str = "") -> None:
     entity = await _resolve_chat(client, chat)
     who = await _resolve_author(client, entity, author)
     topic_ids = await _resolve_topics(client, entity, topics)
+    sell_ids = await _resolve_topics(client, entity, sell_topics)
     if fresh:
         removed = delete_chat_posts(str(entity.id))
         print(f"Removed {removed} previously fetched posts.")
     since = datetime.utcnow() - timedelta(days=days)
-    for topic_id in topic_ids or [None]:
+    plan = [(t, False) for t in (topic_ids or [None])] + [(t, True) for t in sell_ids]
+    for topic_id, sell_only in plan:
         counts = {"new": 0, "edited": 0, "same": 0}
         images_only = images_read = 0
         if topic_id is None:
@@ -227,11 +230,15 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
                 continue
             images_only += not msg.message
             counts[_save(entity.id, msg)] += 1   # images too, so replies to them can be followed
+            if sell_only:
+                mark_sell_only(str(entity.id), msg.id)
             if await _read_image(entity.id, msg):
                 images_read += 1
                 if images_read % 25 == 0:
                     print(f"  ...read {images_read} images so far", flush=True)
         where = f" in topic {topic_id}" if topic_id is not None else ""
+        if sell_only:
+            where += " (sells only)"
         extra = f", {images_only} of them image-only" if images_only else ""
         if images_read:
             extra += f", text read from {images_read} images"
@@ -239,7 +246,7 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
               f"({counts['new']} new{extra}).")
 
 
-async def _listen(client, chat: str, author: str, topic: str) -> None:
+async def _listen(client, chat: str, author: str, topic: str, sell_topics: str = "") -> None:
     from telethon import events  # type: ignore
 
     started = get_live_since()
@@ -249,10 +256,11 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
     else:
         print(f"Live paper account running since {started:%Y-%m-%d %H:%M} UTC.")
     print("Catching up on the last 3 days first (in case the computer was off or asleep)...")
-    await _backfill(client, chat, author, topic, days=3, fresh=False)
+    await _backfill(client, chat, author, topic, days=3, fresh=False, sell_topics=sell_topics)
     entity = await _resolve_chat(client, chat)
     who = await _resolve_author(client, entity, author)
     topic_ids = await _resolve_topics(client, entity, topic)
+    sell_ids = await _resolve_topics(client, entity, sell_topics)
     kwargs = {"chats": entity}
     if who is not None:
         kwargs["from_users"] = who
@@ -261,12 +269,16 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
 
     async def on_message(event) -> None:
         msg = event.message
-        if topic_ids and _topic_of(msg) not in topic_ids:
+        topic_now = _topic_of(msg)
+        sell_only = topic_now in sell_ids
+        if topic_ids and topic_now not in topic_ids and not sell_only:
             return
-        stamp = _utc(msg.date).strftime("%Y-%m-%d %H:%M")
+        stamp = _utc(msg.date).strftime("%Y-%m-%d %H:%M") + (" sells-only topic" if sell_only else "")
         if not msg.message:
             if msg.media:
                 _save(entity.id, msg)
+                if sell_only:
+                    mark_sell_only(str(entity.id), msg.id)
                 read = await _read_image(entity.id, msg)
                 shown = f"text {read[:60]!r}" if read else "no readable text"
                 print(f"[{stamp} UTC] image saved ({shown}); replies to it are followed")
@@ -277,6 +289,8 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
             mids = await loop.run_in_executor(None, feed.snapshot_mids)   # the price right now
             save_snapshot(str(entity.id), msg.id, seen, mids)
         status = _save(entity.id, msg)
+        if sell_only:
+            mark_sell_only(str(entity.id), msg.id)
         read = await _read_image(entity.id, msg)
         if read:
             print(f"    image text: {read[:80]!r}")
@@ -286,6 +300,8 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
     client.add_event_handler(on_message, events.NewMessage(**kwargs))
     client.add_event_handler(on_message, events.MessageEdited(**kwargs))
     where = f", topics {', '.join(map(str, topic_ids))}" if topic_ids else ""
+    if sell_ids:
+        where += f", sells only from {', '.join(map(str, sell_ids))}"
     print(f"Listening (read-only{where}). New posts are saved and paper-copied in the dashboard. "
           "Ctrl+C to stop.")
     await client.run_until_disconnected()
@@ -301,8 +317,9 @@ def run(command: str, days: int = 90, limit: int = 500, fresh: bool = False) -> 
         "chats": lambda: _list_chats(client),
         "authors": lambda: _list_authors(client, s.copy_chat, limit),
         "topics": lambda: _list_topics(client, s.copy_chat, s.copy_author, max(limit, 1000)),
-        "backfill": lambda: _backfill(client, s.copy_chat, s.copy_author, s.copy_topic, days, fresh),
-        "listen": lambda: _listen(client, s.copy_chat, s.copy_author, s.copy_topic),
+        "backfill": lambda: _backfill(client, s.copy_chat, s.copy_author, s.copy_topic, days, fresh,
+                                      s.copy_sell_topics),
+        "listen": lambda: _listen(client, s.copy_chat, s.copy_author, s.copy_topic, s.copy_sell_topics),
     }
 
     async def main() -> None:

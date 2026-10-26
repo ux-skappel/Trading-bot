@@ -224,3 +224,14 @@ class CopyImageText(Base):
     chat_id: Mapped[str] = mapped_column(String(64), index=True)
     message_id: Mapped[int] = mapped_column(Integer, index=True)
     text: Mapped[str] = mapped_column(Text)
+
+
+class CopySellOnly(Base):
+    """A post from a discussion topic: only its sells/stop updates are used, never buys."""
+
+    __tablename__ = "copy_sell_only"
+    __table_args__ = (UniqueConstraint("chat_id", "message_id", name="uq_copy_sell_only"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String(64), index=True)
+    message_id: Mapped[int] = mapped_column(Integer, index=True)
