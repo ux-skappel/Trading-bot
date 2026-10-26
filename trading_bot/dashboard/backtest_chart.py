@@ -29,7 +29,7 @@ def trades_frame(result: BounceResult) -> pd.DataFrame:
             "exit_price": t.exit_price,
             "return_pct": round(t.return_pct * 100, 2),
             "exit_reason": t.exit_reason,
-            "days": t.bars_held,
+            "days": t.days_held,
             "support": round(t.support, 6),
             "stop": round(t.stop, 6),
             "target": round(t.target, 6),
@@ -99,11 +99,11 @@ def equity_chart(result: BounceResult, theme: str = "light", height: int = 280) 
     })
     long = pd.concat([
         pd.DataFrame({"timestamp": stamps, "series": "Strategy", "value": wide["strategy"]}),
-        pd.DataFrame({"timestamp": stamps, "series": "Buy & hold", "value": wide["buy_hold"]}),
+        pd.DataFrame({"timestamp": stamps, "series": "Buy & hold (1x)", "value": wide["buy_hold"]}),
     ])
     color = alt.Color(
         "series:N",
-        scale=alt.Scale(domain=["Strategy", "Buy & hold"], range=[SUPPORT, CANDLE]),
+        scale=alt.Scale(domain=["Strategy", "Buy & hold (1x)"], range=[SUPPORT, CANDLE]),
         legend=alt.Legend(title=None, orient="top"),
     )
     x = alt.X("timestamp:T", title=None)
@@ -125,7 +125,7 @@ def equity_chart(result: BounceResult, theme: str = "light", height: int = 280) 
         tooltip=[
             alt.Tooltip("timestamp:T", title="Date"),
             alt.Tooltip("strategy:Q", title="Strategy", format=",.1f"),
-            alt.Tooltip("buy_hold:Q", title="Buy & hold", format=",.1f"),
+            alt.Tooltip("buy_hold:Q", title="Buy & hold (1x)", format=",.1f"),
         ],
     ).add_params(hover)
 

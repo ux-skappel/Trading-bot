@@ -66,12 +66,16 @@ def _levels_for_symbol(symbol: str):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _bounce_for_symbol(symbol: str, period: str, min_touches: int, min_rr: float):
+def _bounce_for_symbol(symbol: str, period: str, min_touches: int, min_rr: float,
+                       leverage: int, max_days):
     """Backtest the support-bounce strategy for one symbol (cached 1 hour)."""
     history = MarketDataProvider(settings.market_data_provider).get_history(
         symbol, infer_asset_class(symbol), period=period
     )
-    params = BounceParams.from_settings(settings, min_touches=min_touches, min_reward_risk=min_rr)
+    params = BounceParams.from_settings(
+        settings, min_touches=min_touches, min_reward_risk=min_rr,
+        leverage=leverage, max_hold_days=max_days,
+    )
     return history.bars, backtest_support_bounce(history.bars, symbol, params), history.source
 
 
@@ -138,31 +142,36 @@ with tab_strategy:
         "Buys when a daily candle dips into a support zone, holds, and closes green above it. "
         "Enters at the next open if reward/risk still holds; stop just below the support, "
         "target just below the nearest resistance. Uses the same level detector as the live "
-        "bot, with only the data known on each day. Fees 0.1% per side. "
-        "Past results do not guarantee future returns."
+        "bot, with only the data known on each day. Costs follow Liquid perps: 0.095% fee per "
+        "side, 0.03% funding per day and liquidation at 1.25% maintenance margin. Leverage "
+        "applies to this test only. Past results do not guarantee future returns."
     )
     market_keys = {"US stocks": "us", "Oslo Børs": "oslo", "Europe": "europe", "Crypto": "crypto"}
-    c_mkt, c_per, c_tch, c_rr = st.columns([3, 1, 1, 1])
+    hold_options = {"No limit": None, "1 day": 1, "2 days": 2, "3 days": 3, "5 days": 5, "10 days": 10}
+    c_mkt, c_per, c_lev, c_hold, c_tch, c_rr = st.columns([3, 1, 1, 1, 1, 1])
     markets = c_mkt.multiselect("Markets", list(market_keys), default=["US stocks", "Crypto"])
     period = c_per.selectbox("History", ["1y", "2y", "5y", "10y"], index=2)
+    leverage = c_lev.selectbox("Leverage", [1, 2, 3, 5, 10, 20, 40], format_func=lambda x: f"{x}x",
+                               help="Liquid allows up to 40x on crypto")
+    hold_label = c_hold.selectbox("Max days in trade", list(hold_options), index=3)
     min_touches = int(c_tch.number_input("Min touches", min_value=1, max_value=5, value=2))
     min_rr = float(c_rr.number_input("Min reward/risk", min_value=1.0, max_value=5.0,
                                      value=float(settings.min_reward_risk), step=0.25))
     if st.button("Run backtest", type="primary", disabled=not markets):
         st.session_state["bounce_request"] = (
             tuple(settings.symbols_for([market_keys[m] for m in markets])),
-            period, min_touches, min_rr,
+            period, min_touches, min_rr, leverage, hold_options[hold_label],
         )
 
     request = st.session_state.get("bounce_request")
     if request is None:
         st.info("Pick markets and press **Run backtest**.")
     else:
-        symbols, req_period, req_touches, req_rr = request
+        symbols, req_period, req_touches, req_rr, req_lev, req_days = request
         runs = {}
         progress = st.progress(0.0, text="Backtesting...")
         for i, sym in enumerate(symbols, start=1):
-            runs[sym] = _bounce_for_symbol(sym, req_period, req_touches, req_rr)
+            runs[sym] = _bounce_for_symbol(sym, req_period, req_touches, req_rr, req_lev, req_days)
             progress.progress(i / len(symbols), text=f"Backtesting {sym}...")
         progress.empty()
 
@@ -171,17 +180,24 @@ with tab_strategy:
         if offline:
             st.warning(f"No live price data for {', '.join(offline)} — those use offline demo data.")
         st.caption(
-            f"{len(symbols)} symbols · {req_period} of daily candles · min {req_touches} touches · "
-            f"min reward/risk {req_rr}"
+            f"{len(symbols)} symbols · {req_period} of daily candles · {req_lev}x leverage · "
+            f"{'max ' + str(req_days) + ' days in trade' if req_days else 'no time limit'} · "
+            f"min {req_touches} touches · min reward/risk {req_rr}"
         )
 
         total = summarize(results)
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric("Trades", total["trades"])
         m2.metric("Win rate", "-" if total["win_rate"] is None else f"{total['win_rate']:.0%}")
-        m3.metric("Avg per trade", "-" if total["avg_return"] is None else f"{total['avg_return']:+.2%}")
-        m4.metric("Profit factor", "-" if total["profit_factor"] is None else f"{total['profit_factor']:.2f}")
+        m3.metric("Avg per trade", "-" if total["avg_return"] is None else f"{total['avg_return']:+.2%}",
+                  help="Return on your own money, after leverage, fees and funding")
+        m4.metric("Profit factor", "-" if total["profit_factor"] is None else f"{total['profit_factor']:.2f}",
+                  help="Total gains divided by total losses. Below 1 loses money over time.")
+        m5, m6, m7, m8 = st.columns(4)
         m5.metric("Beat buy & hold", f"{total['beat_buy_hold']} of {total['symbols']}")
+        m6.metric("Avg days held", "-" if total["avg_days_held"] is None else f"{total['avg_days_held']:.1f}")
+        m7.metric("Liquidations", total["liquidations"])
+        m8.metric("Accounts wiped out", f"{total['wiped_out']} of {total['symbols']}")
 
         def _pct100(value):
             return None if value is None else value * 100
@@ -196,6 +212,7 @@ with tab_strategy:
                 "buy & hold": r.buy_hold_return * 100,
                 "max drawdown": r.max_drawdown * 100,
                 "time in market": r.time_in_market * 100,
+                "liquidations": r.liquidations,
             }
             for r in results
         ]).sort_values("strategy", ascending=False)
@@ -225,6 +242,7 @@ with tab_strategy:
                 "exit_time": st.column_config.DateColumn("sold", format="YYYY-MM-DD"),
                 "exit_price": "sell price",
                 "exit_reason": "exit",
+                "days": "days held",
                 "outcome": None,
             },
             hide_index=True,

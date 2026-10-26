@@ -40,8 +40,11 @@ crypto assets, ranks opportunities with a transparent 0–100 score, and
   candle dips into a support zone and closes green above it (stop below the
   support, target below the nearest resistance, minimum reward/risk) over up
   to 10 years of real prices. Uses the same level detector as the live bot
-  with only the data known on each day, and charges fees. Reports win rate,
-  return vs buy & hold, max drawdown and every trade.
+  with only the data known on each day. Optional leverage (backtest only) and
+  a max number of days per trade. Costs follow Liquid perps (0.095% fee per
+  side, 0.03% funding per day, liquidation at 1.25% maintenance margin).
+  Reports win rate, return vs buy & hold, max drawdown, liquidations and
+  every trade.
 - **Paper broker** — entry / stop loss / take profit / trailing stop /
   exit reason / PnL.
 - **Risk manager** — position size cap, daily loss cap, max open positions,
@@ -149,6 +152,7 @@ README.md
    python -m trading_bot.main strategy --market us crypto       # 5 years
    python -m trading_bot.main strategy AAPL BTC --period 10y --trades
    python -m trading_bot.main strategy --min-touches 3 --min-rr 2
+   python -m trading_bot.main strategy --market crypto --leverage 5 --max-days 3
    ```
 
 8. **Run the tests:**

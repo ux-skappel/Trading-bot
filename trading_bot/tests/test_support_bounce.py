@@ -9,7 +9,8 @@ from trading_bot.backtesting.support_bounce import (
     summarize,
 )
 
-P = BounceParams(lookback_bars=30, sr_window=2, min_touches=2, min_reward_risk=1.5, fee_pct=0.0)
+P = BounceParams(lookback_bars=30, sr_window=2, min_touches=2, min_reward_risk=1.5,
+                 fee_pct=0.0, funding_pct_per_day=0.0)
 CYCLE = [100, 102, 104, 106, 108, 110, 108, 106, 104, 102]   # floor ~100, ceiling ~110
 
 
@@ -60,6 +61,57 @@ def test_no_look_ahead():
         closed = [(t.entry_time, t.exit_time) for t in prefix if t.exit_reason != "end_of_data"]
         expected = [(t.entry_time, t.exit_time) for t in full if t.exit_time <= bars[k - 1].timestamp]
         assert closed == expected, f"differs when cut at bar {k}"
+
+
+def test_max_hold_days_sells_at_the_close():
+    bars = _candles(CYCLE * 5)
+    r = backtest_support_bounce(bars, "X", replace(P, max_hold_days=1))
+    assert r.trades and all(t.days_held == 1 for t in r.trades)
+    first = r.trades[0]
+    assert first.exit_reason == "time"
+    assert first.exit_time == first.entry_time
+    sell_bar = next(b for b in bars if b.timestamp == first.exit_time)
+    assert first.exit_price == sell_bar.close
+
+
+def test_leverage_scales_returns():
+    bars = _candles(CYCLE * 5)
+    flat = backtest_support_bounce(bars, "X", P).trades
+    geared = backtest_support_bounce(bars, "X", replace(P, leverage=3)).trades
+    assert [t.entry_time for t in geared] == [t.entry_time for t in flat]
+    for g, f in zip(geared, flat):
+        assert math.isclose(g.return_pct, 3 * f.return_pct)
+
+
+def test_funding_is_charged_on_the_whole_position_per_day():
+    bars = _candles(CYCLE * 5)
+    free = backtest_support_bounce(bars, "X", replace(P, leverage=2)).trades
+    paid = backtest_support_bounce(bars, "X", replace(P, leverage=2, funding_pct_per_day=0.001)).trades
+    for f, c in zip(free, paid):
+        assert math.isclose(f.return_pct - c.return_pct, 2 * 0.001 * c.days_held)
+
+
+BREAKDOWN = CYCLE * 3 + [100, 102, 101, 97, 94] + CYCLE * 2
+
+
+def test_liquidation_before_the_stop_keeps_the_maintenance_margin():
+    r = backtest_support_bounce(_candles(BREAKDOWN), "X", replace(P, leverage=40))
+    t = r.trades[0]
+    assert t.exit_reason == "liquidated"
+    assert t.exit_price > t.stop, "liquidation price is reached before the stop"
+    # 40x with 1.25% maintenance margin: liquidated after a 1.25% drop, keeping 50%.
+    assert math.isclose(t.return_pct, -(1 - 40 * P.maintenance_margin))
+    assert summarize([r])["wiped_out"] == 0
+
+
+def test_gap_through_liquidation_wipes_out_and_stops_trading():
+    bars = _candles(BREAKDOWN)
+    bars[33] = replace(bars[33], open=95.0, high=96.0, low=94.0, close=95.5)
+    r = backtest_support_bounce(bars, "X", replace(P, leverage=40))
+    assert r.trades[0].exit_reason == "liquidated" and r.trades[0].return_pct == -1.0
+    assert len(r.trades) == 1, "a wiped-out account must stop trading"
+    assert r.total_return == -1.0 and r.max_drawdown == -1.0
+    assert summarize([r])["wiped_out"] == 1
 
 
 def test_too_little_data_gives_empty_result():

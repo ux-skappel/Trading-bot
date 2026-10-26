@@ -142,19 +142,29 @@ def _print_bounce_row(r: BounceResult, source: str) -> None:
     print(
         f"{r.symbol:<10} {source:>8} {len(r.trades):>6} {win:>5} {_pct(r.avg_return):>9} "
         f"{_pct(r.total_return):>9} {_pct(r.buy_hold_return):>9} {_pct(r.max_drawdown):>7} "
-        f"{r.time_in_market:>6.0%}"
+        f"{r.time_in_market:>6.0%} {r.liquidations:>4}"
     )
 
 
 def cmd_strategy(args: argparse.Namespace) -> int:
     s = get_settings()
-    params = BounceParams.from_settings(s, min_touches=args.min_touches, min_reward_risk=args.min_rr)
+    if not 1 <= args.leverage <= 50:
+        print("--leverage must be between 1 and 50 (Liquid allows up to 40x on crypto)")
+        return 2
+    params = BounceParams.from_settings(
+        s, min_touches=args.min_touches, min_reward_risk=args.min_rr,
+        leverage=args.leverage, max_hold_days=args.max_days,
+    )
+    hold = f"max {params.max_hold_days} days" if params.max_hold_days else "no time limit"
     print(
         f"\nSupport-bounce backtest · daily candles · min {params.min_touches} touches · "
-        f"min reward/risk {params.min_reward_risk} · fee {params.fee_pct:.2%} per side\n"
+        f"min reward/risk {params.min_reward_risk} · {params.leverage:g}x leverage · {hold}\n"
+        f"Costs like Liquid perps: fee {params.fee_pct:.3%} per side, funding "
+        f"{params.funding_pct_per_day:.2%}/day, liquidation at {params.maintenance_margin:.2%} "
+        f"maintenance margin\n"
     )
     print(f"{'SYMBOL':<10} {'DATA':>8} {'TRADES':>6} {'WIN':>5} {'AVG/TRADE':>9} "
-          f"{'STRATEGY':>9} {'BUY&HOLD':>9} {'MAX DD':>7} {'IN MKT':>6}")
+          f"{'STRATEGY':>9} {'BUY&HOLD':>9} {'MAX DD':>7} {'IN MKT':>6} {'LIQ':>4}")
 
     if args.csv:
         with open(args.csv, encoding="utf-8-sig") as f:
@@ -175,7 +185,7 @@ def cmd_strategy(args: argparse.Namespace) -> int:
             for t in r.trades:
                 print(f"    {t.entry_time:%Y-%m-%d} buy {t.entry_price:.4g} (support {t.support:.4g}, "
                       f"{t.support_touches}x) -> {t.exit_time:%Y-%m-%d} {t.exit_reason} "
-                      f"{t.exit_price:.4g}  {t.return_pct:+.1%}")
+                      f"{t.exit_price:.4g}  {t.return_pct:+.1%}  ({t.days_held}d)")
 
     total = summarize(results)
     if total["trades"]:
@@ -183,8 +193,12 @@ def cmd_strategy(args: argparse.Namespace) -> int:
         print(
             f"\nALL: {total['trades']} trades · win {total['win_rate']:.0%} · "
             f"avg {total['avg_return']:+.2%} per trade · profit factor {pf} · "
+            f"avg {total['avg_days_held']:.1f} days held · "
             f"beat buy & hold in {total['beat_buy_hold']} of {total['symbols']}"
         )
+        if params.leverage > 1:
+            print(f"     {total['liquidations']} liquidations · "
+                  f"{total['wiped_out']} of {total['symbols']} accounts wiped out")
     else:
         print("\nNo trades — the strategy never triggered on this data.")
     print("Past results do not guarantee future returns.")
@@ -225,6 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
     strat.add_argument("--csv", help="OHLC or close-only CSV file")
     strat.add_argument("--min-touches", type=int, default=2)
     strat.add_argument("--min-rr", type=float, default=1.5, help="minimum reward/risk")
+    strat.add_argument("--leverage", type=float, default=1.0, help="1 = none, max 50 (backtest only)")
+    strat.add_argument("--max-days", type=int, default=None, help="sell at the close after N days")
     strat.add_argument("--trades", action="store_true", help="list every trade")
     strat.set_defaults(func=cmd_strategy)
 

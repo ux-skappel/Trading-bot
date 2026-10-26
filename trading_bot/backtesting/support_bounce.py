@@ -14,7 +14,22 @@ Rules (long only, one position per symbol at a time):
 * Enter at the next day's open, but only if reward/risk still holds at that
   price (a gap up can ruin it). Exit at the stop or the target; when both are
   inside one candle the stop is assumed to come first. A gap through either
-  level fills at the open. Fees are charged on entry and on exit.
+  level fills at the open. With ``max_hold_days`` set, sell at that day's
+  close if neither level was hit.
+
+Costs and leverage follow Liquid's perps (liquid.trade, which routes to
+Hyperliquid). Leverage is for this backtest only; the paper/live bot never
+uses it.
+
+* The position is ``leverage`` x your money, so gains and losses scale by it.
+* Taker fees (0.095% per side) are charged on the full position on entry and
+  exit, and funding (base rate 0.01% per 8 hours) on the full position for
+  every day held.
+* Maintenance margin is 1.25% of the position (Liquid's figure for 40x
+  markets). If price falls to where only that is left (a ``1/leverage - 1.25%``
+  drop) before the stop is reached, the position is liquidated at that price
+  and you keep what remains. A gap straight through it loses everything.
+* Once less than 1% of the starting money is left, the account stops trading.
 """
 
 from __future__ import annotations
@@ -24,6 +39,10 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from ..analysis.support_resistance import Bar, detect_levels, suggest_stop_take
+
+# Below 1% of the starting money (e.g. under $10 of $1,000 — Liquid's minimum
+# position) the account can't trade any more and counts as wiped out.
+WIPED_OUT = 0.01
 
 
 @dataclass
@@ -37,7 +56,11 @@ class BounceParams:
     min_reward_risk: float = 1.5
     default_take_pct: float = 0.10
     max_stop_pct: float = 0.10
-    fee_pct: float = 0.001          # per side
+    fee_pct: float = 0.00095                # Liquid perps taker fee, per side, on the full position
+    leverage: float = 1.0
+    max_hold_days: Optional[int] = None     # None = hold until stop or target
+    funding_pct_per_day: float = 0.0003     # Liquid base funding 0.01%/8h, on the full position
+    maintenance_margin: float = 0.0125      # Liquid: half the initial margin at 40x
 
     @classmethod
     def from_settings(cls, settings, **overrides) -> "BounceParams":
@@ -66,9 +89,9 @@ class BounceTrade:
     support_touches: int
     exit_time: datetime
     exit_price: float
-    exit_reason: str        # stop | target | end_of_data
-    return_pct: float       # after fees
-    bars_held: int
+    exit_reason: str        # stop | target | time | liquidated | end_of_data
+    return_pct: float       # on your own money: after leverage, fees and financing
+    days_held: int          # 1 = sold the same day it was bought
 
 
 @dataclass
@@ -78,7 +101,7 @@ class BounceResult:
     symbol: str
     trades: List[BounceTrade] = field(default_factory=list)
     equity: List[Tuple[datetime, float]] = field(default_factory=list)     # starts at 1.0
-    buy_hold: List[Tuple[datetime, float]] = field(default_factory=list)   # starts at 1.0
+    buy_hold: List[Tuple[datetime, float]] = field(default_factory=list)   # 1x, starts at 1.0
     time_in_market: float = 0.0
 
     @property
@@ -106,8 +129,13 @@ class BounceResult:
         peak, worst = 0.0, 0.0
         for _, value in self.equity:
             peak = max(peak, value)
-            worst = min(worst, value / peak - 1)
+            if peak > 0:
+                worst = min(worst, value / peak - 1)
         return worst
+
+    @property
+    def liquidations(self) -> int:
+        return sum(1 for t in self.trades if t.exit_reason == "liquidated")
 
 
 @dataclass
@@ -162,7 +190,9 @@ def backtest_support_bounce(
     if len(bars) < start + 2:
         return BounceResult(symbol)
 
-    fee = p.fee_pct
+    lev, fee = p.leverage, p.fee_pct
+    # Price drop that leaves only the maintenance margin; 1x can't be liquidated.
+    liq_move = 1 / lev - p.maintenance_margin if lev > 1 else None
     cash = 1.0
     trades: List[BounceTrade] = []
     equity: List[Tuple[datetime, float]] = []
@@ -173,7 +203,10 @@ def backtest_support_bounce(
     def close_position(exit_index: int, price: float, reason: str) -> None:
         nonlocal cash, position
         assert position is not None
-        ret = price * (1 - fee) / (position.entry_price * (1 + fee)) - 1
+        days = exit_index - position.entry_index + 1
+        move = price / position.entry_price - 1
+        costs = lev * (fee * (2 + move) + p.funding_pct_per_day * days)
+        ret = max(-1.0, lev * move - costs)
         cash *= 1 + ret
         s = position.signal
         trades.append(BounceTrade(
@@ -185,7 +218,7 @@ def backtest_support_bounce(
             exit_price=price,
             exit_reason=reason,
             return_pct=ret,
-            bars_held=exit_index - position.entry_index,
+            days_held=days,
         ))
         position = None
 
@@ -200,21 +233,31 @@ def backtest_support_bounce(
 
         if position is not None:
             s = position.signal
-            if bar.open <= s.stop:
+            liq = position.entry_price * (1 - liq_move) if liq_move is not None else 0.0
+            if bar.open <= liq:
+                close_position(t, bar.open, "liquidated")
+            elif bar.open <= s.stop:
                 close_position(t, bar.open, "stop")
             elif bar.open >= s.target:
                 close_position(t, bar.open, "target")
-            elif bar.low <= s.stop:
-                close_position(t, s.stop, "stop")
+            elif bar.low <= max(s.stop, liq):
+                # Falling price reaches whichever level is higher first.
+                if s.stop >= liq:
+                    close_position(t, s.stop, "stop")
+                else:
+                    close_position(t, liq, "liquidated")
             elif bar.high >= s.target:
                 close_position(t, s.target, "target")
+            elif p.max_hold_days and t - position.entry_index + 1 >= p.max_hold_days:
+                close_position(t, bar.close, "time")
 
         if position is not None:
             bars_in_market += 1
-            equity.append((bar.timestamp, cash * bar.close / (position.entry_price * (1 + fee))))
+            move = bar.close / position.entry_price - 1
+            equity.append((bar.timestamp, cash * max(0.0, 1 + lev * move - fee * lev)))
         else:
             equity.append((bar.timestamp, cash))
-            if t < len(bars) - 1:
+            if cash >= WIPED_OUT and t < len(bars) - 1:
                 pending = _find_signal(bars, t, p)
 
     if position is not None:
@@ -245,4 +288,7 @@ def summarize(results: List[BounceResult]) -> Dict[str, Optional[float]]:
         "avg_return": sum(returns) / len(returns) if returns else None,
         "profit_factor": gains / losses if losses else None,
         "beat_buy_hold": sum(1 for r in results if r.total_return > r.buy_hold_return),
+        "liquidations": sum(r.liquidations for r in results),
+        "wiped_out": sum(1 for r in results if r.equity and r.equity[-1][1] < WIPED_OUT),
+        "avg_days_held": sum(t.days_held for t in trades) / len(trades) if trades else None,
     }
