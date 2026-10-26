@@ -306,6 +306,17 @@ STRONG = re.compile(
     r"|oversolgt\W+(?:\w+\W+){0,3}support|support\W+(?:\w+\W+){0,3}oversolgt")
 
 
+# Meme captions ("me when I long TESLA at the top 😂") are never bought unless the
+# post also carries something only a real call has.
+JOKE = re.compile(r"[😂🤣😆😅💀🙈]|\b(?:haha\w*|hehe\w*|lol|lmao|meme\w*)\b")
+TRADE_MARK = re.compile(r"[🔼🔽📈📉]")
+
+
+def _has_trade_details(sig: Signal, raw: str) -> bool:
+    return bool(sig.leverage or sig.stop_loss or sig.take_profits or sig.risk_pct or sig.size_pct
+                or not sig.market or TRADE_MARK.search(raw))
+
+
 def _confidence(sig: Signal, lower: str) -> None:
     """Risky words make the copy smaller, solid ones ("klink support") bigger. Risky wins."""
     text = NEGATED.sub(" ", lower)
@@ -440,7 +451,11 @@ def parse_signals(text: str) -> List[Signal]:
 
     if head_symbols:
         for sym in head_symbols:
-            out.append(_open_details(Signal("open", symbol=sym, side=head_side), raw, lower))
+            sig = _open_details(Signal("open", symbol=sym, side=head_side), raw, lower)
+            if JOKE.search(lower) and not _has_trade_details(sig, raw):
+                sig = Signal("info", symbol=sym, side=head_side, notes=[
+                    "looks like a joke/meme (😂, haha) with no leverage, stop, levels or 🔼/🔽: not bought"])
+            out.append(sig)
         if len(head_symbols) > 1:
             for sig in out[-len(head_symbols):]:
                 sig.notes.append(f"one of {len(head_symbols)} trades in the same post")

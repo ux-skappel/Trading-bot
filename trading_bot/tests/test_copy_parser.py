@@ -167,6 +167,23 @@ def test_his_tone_sets_the_confidence(words, confidence):
     assert s.action == "open" and s.confidence == confidence
 
 
+@pytest.mark.parametrize("text", [
+    "Meg når jeg longer TESLA på toppen 😂",
+    "Når du shorter BTC 🤣🤣",
+    "haha NVIDIA LONG gutta",
+])
+def test_meme_captions_are_not_bought(text):
+    assert [s.action for s in parse_signals(text)] == ["info"]
+
+
+@pytest.mark.parametrize("text", [
+    "TESLA LONG 🔼 Bruker 10X giring 😂",
+    "LONGER BLOOM OG WESTERN NÅ 🔼🔼 haha",
+])
+def test_real_calls_with_a_laugh_are_still_bought(text):
+    assert all(s.action == "open" for s in parse_signals(text))
+
+
 def test_risk_percent_is_not_risky():
     s = parse_signal("LONG $SOL entry 100 SL 95 TP1 110 risk 1% god risk/reward")
     assert s.risk_pct == pytest.approx(0.01) and s.confidence == "strong"
