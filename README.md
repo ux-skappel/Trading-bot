@@ -92,6 +92,12 @@ trading_bot/
   dashboard/
     streamlit_app.py
     sr_chart.py           # candlestick chart with S/R lines
+  copytrade/              # paper-copy a trader's Telegram posts
+    parser.py             # post -> trade instruction
+    engine.py             # replay posts as paper trades (his rules)
+    prices.py             # Hyperliquid/Yahoo intraday candles
+    telegram_reader.py    # read-only Telegram (Telethon)
+    store.py              # saved posts + Telegram Desktop import
   backtesting/
     backtest.py           # news-event replay
     support_bounce.py     # support-bounce strategy backtest
@@ -171,6 +177,41 @@ README.md
      --prices trading_bot/data/sample_prices.csv \
      --horizon 5
    ```
+
+## Copy trading (paper, read-only)
+
+Copy a trader's Telegram posts as **paper trades that follow his rules**: his
+entry, stop loss, targets, leverage and size, plus his follow-up posts (close,
+close part, move stop, cancel). Replays his past posts against real
+Hyperliquid prices (the venue Liquid routes to), so you see his track record
+and how much worse your entries are because you copy after he posts. Nothing
+here sends Telegram messages or places real orders.
+
+1. Get his posts in, either way:
+   - **Telegram Desktop export:** open the group → ⋮ → *Export chat history* →
+     JSON → upload `result.json` in the dashboard's **Copy trading** tab, or
+     `python -m trading_bot.main copy import result.json --author "<his name>"`.
+   - **Telegram API** (also follows new posts live): create an app at
+     <https://my.telegram.org>, fill `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
+     `TELEGRAM_PHONE`, `COPY_CHAT`, `COPY_AUTHOR` in `.env`, then:
+     ```bash
+     python -m trading_bot.main copy login          # once; asks for the Telegram code
+     python -m trading_bot.main copy chats          # find the group
+     python -m trading_bot.main copy authors        # find his id/username
+     python -m trading_bot.main copy backfill --days 90
+     python -m trading_bot.main copy listen         # keep running to follow new posts
+     ```
+     Your login is stored in `telegram.session`: keep it private (git-ignored).
+2. See the result in the **Copy trading** tab, or `python -m trading_bot.main copy report`.
+3. Check how a post is understood: paste it in the tab's parser box, or
+   `python -m trading_bot.main copy parse "LONG $SOL entry 142 SL 138 TP 150 10x"`.
+
+Rules when his post leaves something open: enter at once if the price is
+within 1% of his entry, otherwise wait at his entry for 24 h; size by his risk
+% (with his stop), else his size %, else 10% of the account as margin; split
+the position equally across his targets; stop-first when a candle touches both.
+Posts that aren't clear trade instructions are never traded and are listed
+with the reason.
 
 ## Adding real API keys
 

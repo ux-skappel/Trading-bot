@@ -32,6 +32,7 @@ from trading_bot.dashboard.backtest_chart import (
     trades_chart,
     trades_frame,
 )
+from trading_bot.dashboard import copy_tab
 from trading_bot.dashboard.sr_chart import levels_frame, sr_chart
 from trading_bot.storage.database import init_db, session_scope
 from trading_bot.storage.models import (
@@ -137,11 +138,14 @@ with col_msg:
     st.write(st.session_state.get("last_result", "Press 'Run scan now' to ingest fresh data."))
 
 # Tabs
-(tab_news, tab_opps, tab_levels, tab_strategy, tab_portfolio, tab_positions, tab_perf,
+(tab_news, tab_opps, tab_levels, tab_strategy, tab_copy, tab_portfolio, tab_positions, tab_perf,
  tab_logs, tab_sources, tab_watch, tab_config) = st.tabs([
-    "News", "Opportunities", "Support/Resistance", "Strategy test", "Portfolio",
+    "News", "Opportunities", "Support/Resistance", "Strategy test", "Copy trading", "Portfolio",
     "Open positions", "Performance", "Decisions", "Sources", "Watchlists", "Config",
 ])
+
+with tab_copy:
+    copy_tab.render(settings)
 
 with tab_strategy:
     st.subheader("Strategy test: bounce off support")

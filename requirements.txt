@@ -12,3 +12,4 @@ praw>=7.7
 pytest>=8.0
 rich>=13.7
 APScheduler>=3.10
+telethon>=1.36

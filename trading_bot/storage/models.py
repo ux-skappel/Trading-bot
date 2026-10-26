@@ -173,3 +173,20 @@ class Source(Base):
     domain: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     credibility: Mapped[float] = mapped_column(Float, default=0.5)
     notes: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class CopyMessage(Base):
+    """A post from the trader being copied (read from Telegram, never sent)."""
+
+    __tablename__ = "copy_messages"
+    __table_args__ = (UniqueConstraint("chat_id", "message_id", name="uq_copy_message"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String(64), index=True)
+    message_id: Mapped[int] = mapped_column(Integer)
+    author: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)   # UTC
+    text: Mapped[str] = mapped_column(Text)
+    reply_to: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

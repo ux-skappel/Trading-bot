@@ -21,6 +21,7 @@ dependencies = [
   "praw>=7.7",
   "APScheduler>=3.10",
   "rich>=13.7",
+  "telethon>=1.36",
 ]
 
 [project.optional-dependencies]

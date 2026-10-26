@@ -212,6 +212,69 @@ def cmd_strategy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_copy_report(result) -> None:
+    trade_posts = [o for o in result.posts if o.signal.action != "info"]
+    print(f"\nPaper copy of {len(result.posts)} posts: {len(trade_posts)} trade instructions, "
+          f"{len(result.posts) - len(trade_posts)} other posts\n")
+    for o in result.posts:
+        if o.signal.action == "info":
+            continue
+        print(f"  {o.post.time:%Y-%m-%d %H:%M}  {o.signal.summary()}\n      -> {o.outcome}")
+    print()
+    for t in result.trades:
+        exits = ", ".join(f"{f.reason} {f.price:g}" for f in t.fills) or "-"
+        entry = f"{t.entry_price:g}" if t.entry_price else "-"
+        delay = f" ({t.delay_cost:+.2%} vs his entry)" if t.delay_cost is not None else ""
+        ret = f" ({t.return_on_margin:+.1%} on margin)" if t.return_on_margin is not None else ""
+        money = t.pnl + t.unrealized
+        print(f"  #{t.number:<3} {t.symbol:<6} {t.side:<5} {t.leverage:g}x  {t.status:<9} entry {entry}{delay}"
+              f"  exits: {exits}  -> ${money:+,.2f}{ret}{'  [open]' if t.status == 'open' else ''}"
+              f"{'  ' + t.note if t.status in ('skipped', 'expired', 'cancelled') else ''}")
+    win = "-" if result.win_rate is None else f"{result.win_rate:.0%}"
+    delay = "-" if result.avg_delay_cost is None else f"{result.avg_delay_cost:+.2%}"
+    print(f"\nRealized ${result.realized_pnl:+,.2f} ({result.total_return:+.1%} of ${result.start_equity:,.0f}) · "
+          f"win rate {win} · max drawdown {result.max_drawdown:+.1%} · avg entry vs his {delay}")
+    print("Paper only: no real orders. Past results do not guarantee future returns.")
+
+
+def cmd_copy(args: argparse.Namespace) -> int:
+    from .copytrade.parser import parse_signal
+
+    if args.copy_cmd in ("login", "chats", "authors", "backfill", "listen"):
+        from .copytrade.telegram_reader import run
+        run(args.copy_cmd, days=getattr(args, "days", 90), limit=getattr(args, "limit", 500))
+        return 0
+    if args.copy_cmd == "parse":
+        sig = parse_signal(" ".join(args.text))
+        print(sig.summary())
+        for note in sig.notes:
+            print(f"  - {note}")
+        return 0
+    if args.copy_cmd == "import":
+        from .copytrade.store import export_authors, import_telegram_export
+        if not args.author and not args.channel:
+            print("Who should be copied? Most active senders in the export:")
+            for name, sender_id, count in export_authors(args.file)[:15]:
+                print(f"  {count:>5}  {name}  ({sender_id})")
+            print("Run again with --author \"<name or id>\" (or --channel if every post is his).")
+            return 1
+        counts = import_telegram_export(args.file, args.author)
+        print(f"Imported {counts['new']} new posts ({counts['edited']} edited, "
+              f"{counts['skipped']} other messages skipped) from chat {counts['chat_id']}.")
+        return 0
+    if args.copy_cmd == "report":
+        from .copytrade.engine import CopyConfig, replay
+        from .copytrade.prices import CandleFeed
+        from .copytrade.store import load_posts
+        posts = load_posts()
+        if not posts:
+            print("No posts stored yet. Run `copy backfill` (Telegram API) or `copy import` (export file).")
+            return 1
+        _print_copy_report(replay(posts, CandleFeed().candles, CopyConfig.from_settings(get_settings())))
+        return 0
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="trading_bot")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -255,6 +318,24 @@ def build_parser() -> argparse.ArgumentParser:
     strat.add_argument("--max-days", type=int, default=None, help="sell at the close after N days")
     strat.add_argument("--trades", action="store_true", help="list every trade")
     strat.set_defaults(func=cmd_strategy)
+
+    cp = sub.add_parser("copy", help="paper-copy a trader's Telegram posts (read-only)")
+    cp.set_defaults(func=cmd_copy)
+    csub = cp.add_subparsers(dest="copy_cmd", required=True)
+    csub.add_parser("login", help="log in to Telegram once (asks for the code)")
+    csub.add_parser("chats", help="list your chats with their ids")
+    au = csub.add_parser("authors", help="most active senders in COPY_CHAT")
+    au.add_argument("--limit", type=int, default=500)
+    bf = csub.add_parser("backfill", help="fetch his past posts")
+    bf.add_argument("--days", type=int, default=90)
+    csub.add_parser("listen", help="save his new posts as they arrive")
+    im = csub.add_parser("import", help="import a Telegram Desktop export (result.json)")
+    im.add_argument("file")
+    im.add_argument("--author", help="his name or id as shown in the export")
+    im.add_argument("--channel", action="store_true", help="every post in the export is his")
+    pa = csub.add_parser("parse", help="show how a post would be understood")
+    pa.add_argument("text", nargs="+")
+    csub.add_parser("report", help="replay his stored posts as paper trades")
 
     return p
 

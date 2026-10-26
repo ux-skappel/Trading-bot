@@ -11,3 +11,5 @@ venv/
 data/cache/
 *.egg-info/
 .DS_Store
+*.session
+*.session-journal

@@ -81,6 +81,20 @@ class Settings:
         default_factory=lambda: _str("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
     )
 
+    # --- Copy trading (Telegram, read-only, paper only) ---
+    telegram_api_id: str = field(default_factory=lambda: _str("TELEGRAM_API_ID"))
+    telegram_api_hash: str = field(default_factory=lambda: _str("TELEGRAM_API_HASH"))
+    telegram_phone: str = field(default_factory=lambda: _str("TELEGRAM_PHONE"))
+    copy_chat: str = field(default_factory=lambda: _str("COPY_CHAT"))
+    copy_author: str = field(default_factory=lambda: _str("COPY_AUTHOR"))
+    copy_start_equity: float = field(default_factory=lambda: float(_str("COPY_START_EQUITY", "10000")))
+    copy_default_margin_pct: float = field(
+        default_factory=lambda: float(_str("COPY_DEFAULT_MARGIN_PCT", "0.10")))
+    copy_max_slippage_pct: float = field(
+        default_factory=lambda: float(_str("COPY_MAX_SLIPPAGE_PCT", "0.01")))
+    copy_entry_timeout_hours: float = field(
+        default_factory=lambda: float(_str("COPY_ENTRY_TIMEOUT_HOURS", "24")))
+
     # --- Storage ---
     database_url: str = field(
         default_factory=lambda: _str("DATABASE_URL", "sqlite:///./trading_bot.db")
