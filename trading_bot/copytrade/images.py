@@ -72,6 +72,12 @@ def _known(symbol: Optional[str]) -> bool:
     return bool(symbol) and (symbol in KNOWN_COINS or symbol in IMAGE_NAMES.values())
 
 
+def _precise(raw: str) -> Optional[float]:
+    """A card price, or None when it is rounded too much to use ("$0,09" for DOGE)."""
+    digits = re.sub(r"\D", "", raw).lstrip("0")
+    return to_float(raw) if len(digits) >= 4 else None
+
+
 def cards(text: Optional[str]) -> List[Card]:
     """Every Liquid trade card in the picture (a screenshot can hold several)."""
     found: List[Card] = []
@@ -85,7 +91,7 @@ def cards(text: Optional[str]) -> List[Card]:
         symbol = _symbol_for(name.group(1), strict=False)   # the card's name slot: "BE" is Bloom
         if symbol is None:
             continue
-        prices = [to_float(m.group(1)) for m in _MONEY.finditer(chunk[side.end():])][:2]
+        prices = [_precise(m.group(1)) for m in _MONEY.finditer(chunk[side.end():])][:2]
         found.append(Card(symbol, side.group(2).lower(), to_float(side.group(1)),
                           prices[0] if prices else None, prices[1] if len(prices) > 1 else None))
     return found

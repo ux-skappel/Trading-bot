@@ -160,6 +160,7 @@ class CopyTrade:
     unrealized: float = 0.0
     note: str = ""
     mm: float = CopyConfig.maintenance_margin
+    stop_moved_at: Optional[datetime] = None  # his last stop move (its candle's open came before it)
 
     @property
     def direction(self) -> int:
@@ -267,6 +268,7 @@ class CopyEngine:
         self._stamps: Dict[str, List[datetime]] = {}
         self._interval: Dict[str, timedelta] = {}
         self.withdrawals: List[Tuple[datetime, float]] = []
+        self.reply_entries: Dict[Tuple[int, str, str], float] = {}   # (call post, coin, side) -> his card entry
         self._month_checked: Optional[datetime] = self.cfg.live_since
         self._cursor: Dict[int, int] = {}
 
@@ -389,6 +391,9 @@ class CopyEngine:
 
         liq = trade.liquidation_price
         stop = trade.stop
+        # The candle running when he moved his stop opened before the move: its open can't hit
+        # the new stop (its range still can, at the stop price, as with any stop).
+        moved_inside = trade.stop_moved_at is not None and bar.timestamp < trade.stop_moved_at
         t = bar.timestamp
 
         def beyond(level: Optional[float], value: float) -> bool:
@@ -401,8 +406,8 @@ class CopyEngine:
             if beyond(liq, bar.open):
                 self._book(trade, t, bar.open, trade.remaining, "liquidated")
                 return
-            if beyond(stop, bar.open):
-                self._book(trade, t, bar.open, trade.remaining, self._stop_reason(trade))
+            if beyond(stop, bar.open) and not moved_inside:
+                self._book(trade, t, bar.open, trade.remaining, self._stop_reason(trade, stop))
                 return
             while trade.targets_hit < len(trade.targets) and \
                     (bar.open >= trade.targets[trade.targets_hit] if d == 1
@@ -417,7 +422,7 @@ class CopyEngine:
         if levels:
             first = max(levels) if d == 1 else min(levels)
             if beyond(first, worst):
-                reason = "liquidated" if first == liq and (stop is None or first != stop) else self._stop_reason(trade)
+                reason = "liquidated" if first == liq and (stop is None or first != stop) else self._stop_reason(trade, stop)
                 self._book(trade, t, first, trade.remaining, reason)
                 return
         best = bar.high if d == 1 else bar.low
@@ -429,8 +434,12 @@ class CopyEngine:
             self._book(trade, t, price, trade.remaining if last else part, f"tp{trade.targets_hit}")
 
     @staticmethod
-    def _stop_reason(trade: CopyTrade) -> str:
-        return "stop" if trade.stop == trade.initial_stop else "moved stop"
+    def _move_stop(trade: CopyTrade, at: datetime, stop: Optional[float]) -> None:
+        trade.stop, trade.stop_moved_at = stop, at
+
+    @staticmethod
+    def _stop_reason(trade: CopyTrade, stop: Optional[float] = None) -> str:
+        return "stop" if (trade.stop if stop is None else stop) == trade.initial_stop else "moved stop"
 
     # --- posts ----------------------------------------------------------------
 
@@ -566,7 +575,7 @@ class CopyEngine:
                 self._book(t, self._time_at(t.symbol, post.time), price, t.remaining * sig.close_fraction, "his close")
                 done.append(f"closed {sig.close_fraction:.0%} of #{t.number} {t.symbol} at {price:g}")
             elif sig.action == "move_sl":
-                t.stop = t.entry_price if sig.stop_to_entry else _rescale(sig.new_stop, t.entry_price)
+                self._move_stop(t, post.time, t.entry_price if sig.stop_to_entry else _rescale(sig.new_stop, t.entry_price))
                 done.append(f"stop on #{t.number} {t.symbol} now {t.stop:g}")
         suffix = {"latest": " (no coin named: latest position)",
                   "image": " (his trade card shows it)",
@@ -687,6 +696,8 @@ class CopyEngine:
         price = bar.open
         seen = self._seen_price(post, sig.symbol)
         card_entry = _rescale(card.entry, price) if card and not seen else None
+        if card_entry is None and not seen:   # old posts: his fill from the card he replied with
+            card_entry = _rescale(self.reply_entries.get((post.message_id, sig.symbol, sig.side)), price)
         if seen:
             price, bar = seen, Bar(post.time, seen, seen, seen, seen)   # fill at the live price, now
         elif card_entry and abs(card_entry / price - 1) < 0.15:
@@ -749,6 +760,25 @@ class CopyEngine:
                           list(self.withdrawals), balance)
 
 
+def _reply_entries(posts: List[Post], by_id: Dict[int, Post]) -> Dict[Tuple[int, str, str], float]:
+    """Test on old posts: the entry on the first trade card he posted in reply to each call (within a day).
+
+    An old call is priced from hourly candles, which can be an hour off; his card shows the price he
+    actually got when he posted, which is what a live copy would have paid.
+    """
+    found: Dict[Tuple[int, str, str], float] = {}
+    for post in sorted(posts, key=lambda p: p.time):
+        cards = [c for c in image_cards(post.image_text) if c.entry]
+        root, rid, hops = None, post.reply_to, 0
+        while rid in by_id and hops < 8:
+            root, rid, hops = by_id[rid], by_id[rid].reply_to, hops + 1
+        if not cards or root is None or post.time - root.time > timedelta(days=1):
+            continue
+        for card in cards:
+            found.setdefault((root.message_id, card.symbol, card.side), card.entry)
+    return found
+
+
 def _next_month(t: datetime) -> datetime:
     """Midnight UTC at the start of the month after ``t``."""
     return datetime(t.year + (t.month == 12), t.month % 12 + 1, 1)
@@ -769,6 +799,8 @@ def replay(posts: List[Post], candles: CandleSource, config: Optional[CopyConfig
     engine = CopyEngine(candles, config, max_leverage, snapshot)
     engine.posts_by_id = {p.message_id: p for p in posts}
     since = engine.cfg.live_since
+    if since is None:
+        engine.reply_entries = _reply_entries(posts, engine.posts_by_id)
     chosen = [p for p in posts if since is None or p.time >= since]
     for post in sorted(chosen, key=lambda p: (engine.act_time(p), p.message_id)):
         engine.handle(post)

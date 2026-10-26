@@ -517,3 +517,34 @@ def test_going_short_closes_his_long_in_the_same_coin():
     long, short = replay(posts, source(data), FREE).trades
     assert long.status == "closed" and long.fills[-1].reason == "flipped"
     assert long.fills[-1].price == short.entry_price and short.status == "open"
+
+
+def test_a_stop_moved_inside_an_hour_is_not_hit_by_that_hours_open():
+    # Short at the 15:00 open (80,180); at 15:34 he moves the stop to 79,900 in profit. The 15:00
+    # open came before the move, so it can't stop the trade at the entry price.
+    start = datetime(2026, 10, 24, 14, 0)
+    data = hours([(80300, 80400, 80100, 80180), (80180, 80250, 79400, 79500), (79500, 79600, 79000, 79100)],
+                 symbol="BTC", start=start)
+    posts = [Post(1, start + timedelta(minutes=47), "BTC SHORT 🔽 Bruker 40X giring og SL på $80.6K"),
+             Post(2, start + timedelta(hours=1, minutes=34), "BOOM 🔽\n\nSL i profitt på $79900", reply_to=1)]
+    t = replay(posts, source(data), FREE, now=start + timedelta(hours=4)).trades[0]
+    assert t.entry_price == 80180
+    assert t.fills[-1].reason == "moved stop" and t.fills[-1].price == 79900 and t.pnl > 0
+
+
+def test_rounded_card_prices_are_not_used():
+    from trading_bot.copytrade.images import cards
+    card = cards("• Liquid | DOGECOIN | PERP 10x LONG | CURRENT RETURN | +30% | ENTRY | $0,09 | MARK | $0,09")[0]
+    assert (card.symbol, card.entry, card.mark) == ("DOGE", None, None)
+    card = cards("• Liquid | SOLANA | PERP 10x LONG | CURRENT RETURN | +5% | ENTRY | $98,23 | MARK | $100,76")[0]
+    assert (card.entry, card.mark) == (98.23, 100.76)
+
+
+def test_old_calls_use_the_entry_on_his_reply_card():
+    data = minutes([100, 100, 101, 102, 103], symbol="SOL")
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring", mid=400),
+             Post(401, T0 + timedelta(minutes=2), "🔼🔼🔼", reply_to=400,
+                  image_text="• Liquid | SOLANA | PERP 10x LONG | CURRENT RETURN | +5% | ENTRY | $99,50 | MARK | $101,20")]
+    assert replay(posts, source(data), FREE).trades[0].entry_price == 99.5
+    live = CopyConfig(fee_pct=0, funding_pct_per_day=0, live_since=T0)
+    assert replay(posts, source(data), live).trades[0].entry_price == 100   # live: the price when seen
