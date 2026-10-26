@@ -439,7 +439,7 @@ with tab_opps:
 with tab_portfolio:
     st.subheader("Paper portfolio")
     port = Portfolio()
-    state = port.snapshot()
+    state = port.snapshot(save=False)   # viewing the page shouldn't write to the database
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cash", f"${state.cash:,.2f}")
     c2.metric("Positions value", f"${state.positions_value:,.2f}")

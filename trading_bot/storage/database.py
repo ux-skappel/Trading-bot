@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import create_engine
@@ -15,7 +16,21 @@ from .models import Base, HighImpactAccount, Source
 logger = logging.getLogger(__name__)
 
 _settings = get_settings()
-engine = create_engine(_settings.database_url, future=True, echo=False)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _database_url(url: str) -> str:
+    """Pin a relative SQLite path (sqlite:///./trading_bot.db) to the project folder,
+    so the listener and the dashboard always share one file whatever folder they start in."""
+    prefix = "sqlite:///"
+    if url.startswith(prefix) and not url.startswith(prefix + "/") and ":memory:" not in url:
+        return prefix + str((PROJECT_ROOT / url[len(prefix):]).resolve())
+    return url
+
+
+# timeout: wait for the other process (listener vs dashboard) instead of failing on a lock.
+engine = create_engine(_database_url(_settings.database_url), future=True, echo=False,
+                       connect_args={"timeout": 30} if _settings.database_url.startswith("sqlite") else {})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 

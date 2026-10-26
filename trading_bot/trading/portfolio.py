@@ -92,22 +92,24 @@ class Portfolio:
                     unrealized += (q.price - p.entry_price) * p.quantity
         return realized + unrealized
 
-    def snapshot(self) -> PortfolioState:
+    def snapshot(self, save: bool = True) -> PortfolioState:
+        """Current portfolio state; ``save`` also records it in portfolio_snapshots."""
         opens = self.open_positions()
         pv = self.positions_value(opens)
         cash = self.cash_balance()
         total = cash + pv
         dpnl = self.daily_pnl()
-        with session_scope() as db:
-            db.add(
-                PortfolioSnapshot(
-                    cash=cash,
-                    positions_value=pv,
-                    total_value=total,
-                    daily_pnl=dpnl,
-                    open_positions=len(opens),
+        if save:
+            with session_scope() as db:
+                db.add(
+                    PortfolioSnapshot(
+                        cash=cash,
+                        positions_value=pv,
+                        total_value=total,
+                        daily_pnl=dpnl,
+                        open_positions=len(opens),
+                    )
                 )
-            )
         return PortfolioState(
             cash=cash,
             positions_value=pv,
