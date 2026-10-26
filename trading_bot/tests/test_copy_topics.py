@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from trading_bot.copytrade.telegram_reader import GENERAL_TOPIC, _reply_id, _says_sell, _topic_of
+from trading_bot.copytrade.telegram_reader import GENERAL_TOPIC, _reply_id, _wants_image, _topic_of
 
 
 @pytest.mark.parametrize("caption,read", [
@@ -10,12 +10,13 @@ from trading_bot.copytrade.telegram_reader import GENERAL_TOPIC, _reply_id, _say
     ("Solgt halvparten", True),
     ("SL i profitt på $81.2K", True),
     ("GOOGLE LONG 🔼 Bruker 20X giring og SL på $320", False),
+    ("Velger long Tesla og Apple + short Intel", True),          # no leverage: his card has it
     ("Se så fint det gikk 🤑", False),
     ("", False),
     (None, False),
 ])
-def test_only_pictures_on_sell_posts_are_read(caption, read):
-    assert _says_sell(caption) is read
+def test_pictures_are_read_only_where_they_matter(caption, read):
+    assert _wants_image(caption) is read
 
 
 def reply(msg_id=None, top_id=None, forum_topic=False):

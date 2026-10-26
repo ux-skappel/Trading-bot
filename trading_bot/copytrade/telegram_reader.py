@@ -133,14 +133,16 @@ def _is_image(msg) -> bool:
     return bool(getattr(msg, "photo", None)) or mime.startswith("image/")
 
 
-def _says_sell(text: str) -> bool:
-    """Only sells and stop moves need his picture (to see which position); buys name the coin."""
-    return bool(text) and any(s.action in ("close", "move_sl") for s in parse_signals(text))
+def _wants_image(text: str) -> bool:
+    """His picture matters on sells and stop moves (which position) and on a buy without leverage
+    (his trade card shows it). Memes, charts on buy posts and picture-only posts are skipped."""
+    return bool(text) and any(s.action in ("close", "move_sl") or (s.action == "open" and not s.leverage)
+                              for s in parse_signals(text))
 
 
 async def _read_image(chat_id, msg) -> Optional[str]:
-    """Download the image on one of his sell posts and read its text on this computer (once)."""
-    if not _is_image(msg) or not _says_sell(msg.message) or has_image_text(str(chat_id), msg.id):
+    """Download the picture on a post that needs it and read its text on this computer (once)."""
+    if not _is_image(msg) or not _wants_image(msg.message) or has_image_text(str(chat_id), msg.id):
         return None
     if (getattr(msg.file, "size", 0) or 0) > 10_000_000:
         return None
@@ -230,7 +232,7 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
             scanned += 1
             if scanned % 500 == 0:   # it reads newest first, back to `since`
                 print(f"  ...now at {_utc(msg.date):%Y-%m-%d} (stops at {since:%Y-%m-%d}), "
-                      f"{images_read} sell images read", flush=True)
+                      f"{images_read} pictures read", flush=True)
             if who is not None and msg.sender_id != who.id:
                 continue
             if topic_id == GENERAL_TOPIC and _topic_of(msg) != GENERAL_TOPIC:
@@ -248,7 +250,7 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
             where += " (sells only)"
         extra = f", {images_only} of them image-only" if images_only else ""
         if images_read:
-            extra += f", text read from {images_read} images on sell posts"
+            extra += f", text read from {images_read} pictures"
         print(f"Fetched {sum(counts.values())} posts{where} from the last {days} days "
               f"({counts['new']} new{extra}).")
 

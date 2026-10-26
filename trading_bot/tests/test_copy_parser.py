@@ -283,3 +283,130 @@ from trading_bot.copytrade.parser import image_symbols
 ])
 def test_image_symbols(text, expected):
     assert image_symbols(text, {"GOOGL", "SPCX", "BTC", "HYPE", "TSLA"}) == expected
+
+
+# --- Lessons from reading all his posts (paraphrased examples) ---------------------------
+
+@pytest.mark.parametrize("text,symbol", [
+    ("Velger å selge alt nå", None),
+    ("Solgte alt nå 🔼", None),
+    ("Takk for meg på denne 🔼", None),
+    ("Velger å selge AVAX nå 🔽\n\nEr long BTC", "AVAX"),
+])
+def test_more_ways_he_sells(text, symbol):
+    s = parse_signal(text)
+    assert (s.action, s.symbol) == ("close", symbol)
+
+
+def test_selling_a_named_long_is_not_a_new_buy():
+    sigs = parse_signals("Selger Apple long her 🔼")
+    assert [(s.action, s.symbol) for s in sigs] == [("close", "AAPL")]
+    sigs = parse_signals("Hehe\n\nVelger å selge Nvidia long på Liquid nå")
+    assert [(s.action, s.symbol) for s in sigs] == [("close", "NVDA")]
+
+
+@pytest.mark.parametrize("text", ["Viktig 4h close i kveld", "Fin close i dag", "Close candles over = bra",
+                                  "Dette kan gi kutt i renta", "Lurt med en exit plan"])
+def test_candle_closes_and_chatter_are_not_sells(text):
+    assert parse_signal(text).action != "close"
+
+
+def test_coin_for_a_sell_must_be_on_the_same_line():
+    assert parse_signal("Selger hele nå 🔼\n\nKANONBRA").symbol is None
+
+
+@pytest.mark.parametrize("text", [
+    "Solgt på SizeProp nå\n\nHolder på Liquid",
+    "SELGER ALT PÅ PROPPEN\n\nLIQUID BEHOLDER JEG",
+    "Selger på Prop før helgen",
+])
+def test_prop_account_sells_are_ignored(text):
+    assert [s.action for s in parse_signals(text)] == ["info"]
+
+
+def test_prop_part_of_a_call_is_left_out():
+    s = parse_signal("ROCKET LONG 🔼\n\nGår long nå med 10X giring på Liquid + long 2X giring 50% på SizeProp")
+    assert s.action == "open" and s.leverage == 10 and s.size_pct is None
+
+
+@pytest.mark.parametrize("text", ["Selger ved $145 (sier ifra her)", "Tror nok jeg selger i morgen",
+                                  "Kan selge halvparten og flytte SL", "Selger nok alt etter hvert"])
+def test_sell_plans_are_not_sells(text):
+    assert parse_signal(text).action == "info"
+
+
+def test_selling_at_a_price_in_the_past_is_a_sell():
+    assert parse_signal("Solgt ved $130 nå").action == "close"
+
+
+@pytest.mark.parametrize("text", ["For øyeblikket er jeg kun long Tesla zz\n\n10X giring 🔼",
+                                  "Er long ETH og SOL\nEr short DOGE"])
+def test_more_status_updates(text):
+    assert all(s.action == "info" for s in parse_signals(text))
+
+
+@pytest.mark.parametrize("text,action", [
+    ("META LONG 🔼\n\nBruker 15X giring kl 21:58, ingen SL", "info"),
+    ("Går inn i begge kl 21:58\n\nApple short 🔽", "info"),
+    ("ASML LONG 🔼\n\nTall kl 08:00 i morgen\n\n10X giring, ingen SL", "open"),
+    ("AMAZON LONG 🔼\n\nBruker 10X giring og ingen SL ennå (SL kommer i morgen før kl 15:30)", "open"),
+])
+def test_a_later_entry_time_is_a_plan(text, action):
+    assert parse_signal(text).action == action
+
+
+def test_several_calls_in_one_sentence():
+    sigs = parse_signals("Rapporter i kveld\n\nVelger long Tesla og Apple + short Intel\n\nRisky")
+    assert [(s.action, s.symbol, s.side) for s in sigs] == [
+        ("open", "TSLA", "long"), ("open", "AAPL", "long"), ("open", "INTC", "short")]
+
+
+@pytest.mark.parametrize("text,symbol,side,lev", [
+    ("Palantir legger frem tall i kveld\n\nVelger å gå long med 10X giring 🔼", "PLTR", "long", 10),
+    ("Oracle rapport snart\n\nJeg kjører long 15X, ingen SL 🔼", "ORCL", "long", 15),
+    ("NETFLIX\n\nTipper opp etter tallene 🔼🔼\n\nBruker 10X giring", "NFLX", "long", 10),
+])
+def test_calls_written_out_in_words(text, symbol, side, lev):
+    s = parse_signal(text)
+    assert (s.action, s.symbol, s.side, s.leverage) == ("open", symbol, side, lev)
+
+
+def test_adding_to_a_position():
+    s = parse_signal("Longer mer TESLA her ⚡️")
+    assert (s.action, s.symbol, s.add) == ("open", "TSLA", True)
+    s = parse_signal("Longet mer ⚡️\n\nBeholder til mandag 🔼")
+    assert (s.action, s.symbol, s.side, s.add) == ("open", None, "long", True)
+
+
+@pytest.mark.parametrize("text,stop", [
+    ("Fin short 🔽\n\nPlasserer SL i profitt ved $61.2 (+9%)", 61.2),
+    ("SL plassert $64.3", 64.3),
+])
+def test_more_stop_moves(text, stop):
+    s = parse_signal(text)
+    assert (s.action, s.new_stop) == ("move_sl", stop)
+
+
+def test_one_stop_move_per_line():
+    sigs = parse_signals("🔼🔼\n\nAMD SL i profitt ved $520 (+2%)\n\nSOL SL i profitt ved $101.5 (+4%)")
+    assert [(s.symbol, s.new_stop) for s in sigs] == [("AMD", 520), ("SOL", 101.5)]
+
+
+@pytest.mark.parametrize("text", ["SL er kun -8%", "Ha ha, ingen SL\n\n100x er for gøy", "SL er på -$450"])
+def test_percentages_and_leverage_are_not_stop_levels(text):
+    assert parse_signal(text).action == "info"
+
+
+def test_partial_sell_and_stop_move_in_one_post():
+    sigs = parse_signals("Bra 🔼\n\nSelger 30% og plasserer SL i profitt på $91.4K (+8%)")
+    assert [(s.action, s.close_fraction if s.action == "close" else s.new_stop) for s in sigs] == [
+        ("close", 0.3), ("move_sl", 91400)]
+
+
+def test_sell_names_his_leverage():
+    s = parse_signal("Har solgt 100x-en\n\nBeholder 40x")
+    assert (s.action, s.leverage) == ("close", 100)
+
+
+def test_leverage_is_never_a_ticker():
+    assert [s.symbol for s in parse_signals("HYPE LONG 🔼\n\nBruker 10X long og ingen SL")] == ["HYPE"]

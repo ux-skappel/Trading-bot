@@ -282,10 +282,10 @@ def _two_open(image_text):
 
 
 def test_sell_with_image_closes_the_coin_named_in_the_image():
-    r = _two_open("Liquid\nGOOGL-USD\nLong 20x\nEntry 300.00\nROE +40.1%")
+    r = _two_open("• Liquid | GOOGL PERP 20x LONG | CURRENT RETURN | +40.1% | ENTRY | $300,00 | MARK | $302,00")
     googl, hype = r.trades
     assert googl.status == "closed" and hype.status == "open"
-    assert "coin read from his image" in r.posts[-1].outcome
+    assert "his trade card shows it" in r.posts[-1].outcome
 
 
 def test_sell_with_image_naming_several_positions_does_not_guess():
@@ -295,9 +295,9 @@ def test_sell_with_image_naming_several_positions_does_not_guess():
 
 
 def test_sell_whose_image_names_a_coin_we_dont_hold_closes_nothing():
-    r = _two_open("Liquid\nAMD-USD\nLong 10x\nROE +31%")
+    r = _two_open("• Liquid | AMD PERP 10x LONG | CURRENT RETURN | +31% | ENTRY | $500,00 | MARK | $510,00")
     assert all(t.status == "open" for t in r.trades)
-    assert "image says AMD, which the bot doesn't hold" in r.posts[-1].outcome
+    assert "card shows AMD 10x long, not a position the bot copied" in r.posts[-1].outcome
 
 
 def test_sell_naming_a_coin_we_dont_hold_does_not_close_the_latest():
@@ -334,13 +334,13 @@ def test_reply_sell_shows_what_his_image_says():
     posts = [post(0, "NVIDIA LONG 🔼 Bruker 10X giring", mid=110),
              post(0, "TESLA LONG 🔼 Bruker 10X giring", mid=111),
              Post(112, T0 + timedelta(minutes=3, seconds=30), "SELGER HELE NÅ", reply_to=110,
-                  image_text="Liquid | NVDA PERP 10x LONG | CURRENT RETURN | +22.61%"),
+                  image_text="• Liquid | NVDA PERP 10x LONG | CURRENT RETURN | +22.61%"),
              Post(113, T0 + timedelta(minutes=3, seconds=40), "SELGER HELE NÅ", reply_to=111,
-                  image_text="Liquid | NVDA PERP 10x LONG")]
+                  image_text="• Liquid | NVDA PERP 10x LONG")]
     r = replay(posts, source(data), FREE)
     nvda_sell, tsla_sell = r.posts[-2].outcome, r.posts[-1].outcome
-    assert "#1 NVDA" in nvda_sell and "he replied to it" in nvda_sell and "image says NVDA" in nvda_sell
-    assert "#2 TSLA" in tsla_sell and "⚠ his image says NVDA" in tsla_sell
+    assert "#1 NVDA" in nvda_sell and "he replied to it" in nvda_sell and "card: NVDA 10x long" in nvda_sell
+    assert "#2 TSLA" in tsla_sell and "⚠ his card shows NVDA 10x long" in tsla_sell
 
 
 def test_history_test_sizes_each_trade_on_its_own():
@@ -377,3 +377,86 @@ def test_discussion_topic_sell_without_coin_is_not_guessed():
     r = replay(posts, source(data), FREE)
     assert all(t.status == "open" for t in r.trades)
     assert "not guessing" in r.posts[-1].outcome
+
+
+# --- Lessons from reading all his posts (paraphrased examples) ---------------------------
+
+def hours(rows, symbol="NVDA", start=T0):
+    """Hourly candles from (open, high, low, close) rows."""
+    return {symbol: [Bar(start + timedelta(hours=i), *row) for i, row in enumerate(rows)]}
+
+
+def test_a_stop_move_inside_an_hour_comes_before_that_hours_low():
+    # He buys at 12:00, moves his stop to 214 at 13:17; the 13:00 candle later dips to 209
+    # (below the 20x liquidation). The stop move came first, so the copy is stopped at 214.
+    data = hours([(214, 215, 213, 214.5), (214.5, 215.5, 214.2, 215.3), (215.3, 215.9, 209, 209.6),
+                  (209.6, 210, 208.6, 209.7)], start=T0 - timedelta(hours=1))
+    posts = [Post(1, T0 - timedelta(minutes=42), "NVIDIA LONG 🔼 Bruker 20X giring og ingen SL"),
+             Post(2, T0 + timedelta(hours=1, minutes=17), "NVIDIA SL til $214", reply_to=1)]
+    t = replay(posts, source(data), FREE, now=T0 + timedelta(hours=4)).trades[0]
+    assert [f.reason for f in t.fills] == ["moved stop"] and t.fills[0].price == 214
+
+
+def test_no_buy_when_prices_only_start_weeks_later():
+    data = minutes([45, 45, 46], symbol="IREN")
+    late = Post(1, T0 - timedelta(days=20), "IREN SHORT 🔽 Bruker 10X giring og SL på $39,1")
+    t = replay([late], source(data), FREE).trades[0]
+    assert t.status == "skipped" and "no price from when he posted" in t.note
+
+
+def test_no_buy_when_the_price_is_already_past_his_stop():
+    data = minutes([100, 100, 99])
+    t = replay([post(0, "SOL SHORT 🔽 Bruker 20X giring og SL på $99,5")], source(data), FREE).trades[0]
+    assert t.status == "skipped" and "already past his stop" in t.note
+
+
+def test_his_levels_follow_the_markets_units():
+    # kPEPE-style: he writes 0,00521 for a coin the feed prices at 0.00000500.
+    data = minutes([5.0e-6, 5.0e-6, 5.1e-6, 5.2e-6], symbol="PEPE")
+    t = replay([post(0, "PEPE SHORT 🔽 Bruker 10X giring og SL på $0,00521")], source(data), FREE).trades[0]
+    assert t.stop == pytest.approx(5.21e-6)
+
+
+def test_added_position_inherits_coin_and_leverage_from_the_reply():
+    data = minutes([300, 300, 301, 302, 303], symbol="TSLA")
+    posts = [post(0, "TESLA LONG 🔼 Bruker 10X giring", mid=60),
+             post(2, "Longet mer ⚡️⚡️", mid=61, reply=60)]
+    first, added = replay(posts, source(data), FREE).trades
+    assert (added.symbol, added.side, added.leverage) == ("TSLA", "long", 10)
+    assert "adds to his TSLA position" in " ".join(added.signal.notes)
+
+
+def test_leverage_comes_from_his_card_when_the_post_has_none():
+    data = minutes([590, 590, 591], symbol="META")
+    p = Post(70, T0 + timedelta(seconds=30), "Velger long META",
+             image_text="• Liquid | METADAO PERP 20x LONG | CURRENT RETURN | -0.1% | ENTRY | $590,00 | MARK | $589,50")
+    t = replay([p], source(data), FREE).trades[0]
+    assert t.leverage == 20
+
+
+def test_discussion_sell_of_a_different_position_closes_nothing():
+    # His 10x short is copied; in the discussion topic he sells a separate 75x LONG in the same coin.
+    data = minutes([9.5, 9.5, 9.4, 9.3, 9.2], symbol="LINK")
+    posts = [post(0, "LINK SHORT 🔽 Bruker 10X giring og SL på $9,81", mid=80),
+             Post(81, T0 + timedelta(minutes=3), "Solgt", sell_only=True,
+                  image_text="• Liquid | Chainlink PERP 75x LONG | CURRENT RETURN | +88% | ENTRY | $9,40 | MARK | $9,52")]
+    r = replay(posts, source(data), FREE)
+    assert r.trades[0].status == "open" and "75x long, not a position the bot copied" in r.posts[-1].outcome
+
+
+def test_selling_his_100x_keeps_the_40x_copy():
+    data = minutes([77400, 77400, 77300, 77200, 77100], symbol="BTC")
+    posts = [post(0, "BTC SHORT 🔽 Bruker 40X giring og SL på $78300", mid=90),
+             Post(91, T0 + timedelta(minutes=3), "Solgt min 100x nå\n\nBeholder 40x", sell_only=True,
+                  image_text="• Liquid | Bitcoin PERP | 100x SHORT | CURRENT RETURN | +55% | ENTRY | $77 390 | MARK | $77 010")]
+    r = replay(posts, source(data), FREE)
+    assert r.trades[0].status == "open"
+
+
+def test_old_posts_close_at_the_mark_on_his_card():
+    data = minutes([300, 300, 301, 302, 303], symbol="TSLA")
+    posts = [post(0, "TESLA LONG 🔼 Bruker 10X giring", mid=100),
+             Post(101, T0 + timedelta(minutes=2, seconds=30), "Selger hele nå", reply_to=100,
+                  image_text="• Liquid | TSLA | PERP 10x LONG | CURRENT RETURN | +5% | ENTRY | $300,00 | MARK | $301,50")]
+    t = replay(posts, source(data), FREE).trades[0]
+    assert t.fills[-1].price == 301.5

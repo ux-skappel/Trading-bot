@@ -214,17 +214,32 @@ them, and a buy seen more than `COPY_MAX_OPEN_DELAY_MINUTES` (default 2) after
 he posted is skipped. Sells and stop moves on positions you hold still happen
 when seen. `copy report` shows the live account; `copy report --history` (or
 the toggle in the tab) replays all stored posts as a clearly labelled test.
-`copy review` writes `review.txt` (git-ignored, stays on your computer): every
-post of his with what the bot understood and did, to check for misreads.
+`copy review` writes `review.txt` (git-ignored, stays on your computer).
 
 **Images.** When he sells with a picture of the trade and a caption like
 "SELGER HELE NÅ", the bot reads the text in the picture with the Mac's
-built-in text recognition (offline, free, no API key) to see which of your
-open positions he means. A picture can only pick which open position to act
-on, never open a new trade; if it names several open positions the bot
-doesn't guess. Only pictures on his sell and stop posts are read (the rest
-are skipped to save time); replies to images are still followed back to the
-original trade post. `copy images` shows what was read.
+built-in text recognition (offline, free, no API key). Two kinds of picture
+are trusted: his **Liquid trade card** (coin, side, leverage, entry and mark
+price) and a **price chart** (only the coin in its title). A card picks the
+exact position: a sell whose card shows his 75x long is not applied to the
+10x short the bot copied, and a sell of "my 100x" keeps a 40x copy.
+In the discussion topics only cards count. News screenshots, SizeProp cards
+and memes say nothing. A picture never opens a trade by itself, but a buy
+post without leverage takes the leverage from his card. Pictures are read
+only on sells, stop moves and buys without leverage (the rest are skipped to
+save time); replies to images are still followed back to the original trade
+post. `copy images` shows what was read.
+
+**Not copied:** status updates ("fortsatt long", "for øyeblikket
+long"), plans ("selger ved $X", "tror jeg selger i kveld", "går inn
+kl 21:58"), anything about his SizeProp/prop accounts, candle talk
+("1h close"), memes, and chat that mentions long/short without a call.
+**Copied too:** calls written out in words (a company named in the post plus
+"går long med 10X giring"), several calls in one sentence ("long A og B +
+short C"), adds ("longet mer", which take the coin and
+leverage from the post he replied to), a stop move per coin line, and a sell
+plus a stop move in one post. `copy review` writes every post with what the
+bot understood and did, to check for misreads.
 
 **Sells posted in other topics.** `COPY_SELL_TOPICS` (e.g. his stocks and
 crypto discussion topics) are read too, but only for sells and stop updates,

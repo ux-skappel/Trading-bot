@@ -25,7 +25,9 @@ to come first.
 Liquidation uses each market's own maintenance margin (half the initial
 margin at that market's max leverage), and his leverage is capped at the
 market max. A post can hold several instructions (two trades, or a close plus
-a new trade).
+a new trade). Candles are only applied once they have ended, so a stop move he
+posts inside an hour comes before that hour's low. His trade cards pick which
+position a sell means, and on old posts give his own entry and exit prices.
 
 Paper only: nothing here can place a real order.
 """
@@ -38,7 +40,26 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..analysis.support_resistance import Bar
-from .parser import Signal, image_symbols, image_tickers, parse_signals
+from .images import Card, cards as image_cards, chart_symbol
+from .parser import Signal, image_symbols, parse_signals
+
+
+def _rescale(level: Optional[float], price: Optional[float]) -> Optional[float]:
+    """His level in the market's units: '0,00517' for kPEPE at 0.00000517, 'SL 80.1' for BTC at 80,660."""
+    if not level or not price:
+        return level
+    while level / price > 300:
+        level /= 1000
+    while level / price < 1 / 300:
+        level *= 1000
+    return level
+
+
+def _fits(trade: "CopyTrade", card: Card) -> bool:
+    """Is this his card of the position we copied (same coin, side and his leverage)?"""
+    lev = trade.signal.leverage
+    return trade.symbol == card.symbol and trade.side == card.side and \
+        (card.leverage is None or lev is None or abs(lev - card.leverage) < 0.01)
 
 
 @dataclass
@@ -225,6 +246,7 @@ class CopyEngine:
         self.outcomes: List[PostOutcome] = []
         self._bars: Dict[str, List[Bar]] = {}
         self._stamps: Dict[str, List[datetime]] = {}
+        self._interval: Dict[str, timedelta] = {}
         self._cursor: Dict[int, int] = {}
 
     # --- prices -------------------------------------------------------------
@@ -234,6 +256,8 @@ class CopyEngine:
             bars, _ = self.get_candles(symbol, since - timedelta(hours=1))
             self._bars[symbol] = bars
             self._stamps[symbol] = [b.timestamp for b in bars]
+            steps = [b.timestamp - a.timestamp for a, b in zip(bars[:50], bars[1:51]) if b.timestamp > a.timestamp]
+            self._interval[symbol] = min(steps) if steps else timedelta(minutes=1)
         return bool(self._bars[symbol])
 
     def _index_at(self, symbol: str, t: datetime) -> Optional[int]:
@@ -312,9 +336,11 @@ class CopyEngine:
     # --- walking candles ------------------------------------------------------
 
     def _advance(self, trade: CopyTrade, until: datetime) -> None:
-        bars = self._bars[trade.symbol]
+        bars, step = self._bars[trade.symbol], self._interval.get(trade.symbol, timedelta(minutes=1))
         i = self._cursor.get(trade.number, 0)
-        while i < len(bars) and bars[i].timestamp < until and trade.status in ("pending", "open"):
+        # Only candles that ended by ``until``: a candle still forming may make its high/low
+        # after a post at ``until`` (e.g. his stop move at 13:17 inside the 13:00 hour).
+        while i < len(bars) and bars[i].timestamp + step <= until and trade.status in ("pending", "open"):
             self._step(trade, bars[i])
             i += 1
         self._cursor[trade.number] = i
@@ -402,27 +428,41 @@ class CopyEngine:
         return None
 
     def _targets_for(self, post: Post, sig: Signal, statuses: Tuple[str, ...]) -> Tuple[List[CopyTrade], str]:
+        matches = [t for t in self.trades if t.status in statuses]
+        cards = image_cards(post.image_text)
         replied = self._linked_trades(post)
         if replied is not None:
             linked = [t for t in replied if t.status in statuses]
-            if not sig.symbol:
-                return linked, "reply"
-            named = [t for t in linked if t.symbol == sig.symbol]
-            if named:
-                return named, "reply"
-        matches = [t for t in self.trades if t.status in statuses]
+            if sig.symbol:
+                linked = [t for t in linked if t.symbol == sig.symbol]
+            if linked or not sig.symbol:
+                return self._by_leverage(linked, sig), "reply"
         if sig.symbol:
-            return [t for t in matches if t.symbol == sig.symbol], sig.symbol
-        if post.image_text:
-            named = image_symbols(post.image_text, {t.symbol for t in matches})
-            if len(named) == 1:
-                return [t for t in matches if t.symbol == named[0]], "image"
-            if len(named) > 1:
-                return [], "image: " + ", ".join(named)
-            return [], "image names no open position"   # never guess against his picture
+            named = [t for t in matches if t.symbol == sig.symbol]
+            mine = [c for c in cards if c.symbol == sig.symbol]
+            if mine:   # his card says which of the positions in that coin he sold
+                named = [t for t in named if any(_fits(t, c) for c in mine)]
+            return self._by_leverage(named, sig), sig.symbol
+        if cards:
+            hits = [t for t in matches if any(_fits(t, c) for c in cards)]
+            return (self._by_leverage(hits, sig), "image") if hits else \
+                ([], "card: " + ", ".join(c.describe() for c in cards))
+        chart = None if post.sell_only else chart_symbol(post.image_text)
+        if chart:
+            return [t for t in matches if t.symbol == chart], f"chart: {chart}"
         if post.sell_only:
             return [], "unclear"        # never guess from a discussion topic
+        named = image_symbols(post.image_text, {t.symbol for t in matches}) if post.image_text else []
+        if len(named) > 1:
+            return [], "several: " + ", ".join(named)
         return matches[-1:], "latest"
+
+    @staticmethod
+    def _by_leverage(trades: List[CopyTrade], sig: Signal) -> List[CopyTrade]:
+        """'Sold my 100x, keeping the 40x': only his position with that leverage."""
+        if not sig.leverage:
+            return trades
+        return [t for t in trades if t.signal.leverage is None or abs(t.signal.leverage - sig.leverage) < 0.01]
 
     def act_time(self, post: Post) -> datetime:
         """When the bot could act: when it saw the post (live), else when it was posted."""
@@ -470,50 +510,55 @@ class CopyEngine:
                 for t in pending:
                     t.status, t.note = "cancelled", "he closed before our entry filled"
                 return f"cancelled pending {', '.join(f'#{t.number}' for t in pending)}"
-            return self._ignored(post, sig)
+            return self._ignored(post, sig, how)
         done = []
         for t in trades:
             self._link(post.message_id, t)
             if sig.action == "close":
-                price = self._seen_price(post, t.symbol) or self._price_at(t.symbol, post.time)
+                price = self._seen_price(post, t.symbol) or self._card_price(post, t) or self._price_at(t.symbol, post.time)
                 if price is None:
                     continue
                 self._book(t, self._time_at(t.symbol, post.time), price, t.remaining * sig.close_fraction, "his close")
                 done.append(f"closed {sig.close_fraction:.0%} of #{t.number} {t.symbol} at {price:g}")
             elif sig.action == "move_sl":
-                t.stop = t.entry_price if sig.stop_to_entry else sig.new_stop
+                t.stop = t.entry_price if sig.stop_to_entry else _rescale(sig.new_stop, t.entry_price)
                 done.append(f"stop on #{t.number} {t.symbol} now {t.stop:g}")
         suffix = {"latest": " (no coin named: latest position)",
-                  "image": " (coin read from his image)",
-                  "reply": " (he replied to it)"}.get(how, "")
+                  "image": " (his trade card shows it)",
+                  "reply": " (he replied to it)"}.get(how, " (coin from his chart)" if how.startswith("chart") else "")
         return ("; ".join(done) + suffix + self._image_check(post, trades)) if done else "no price data"
 
     def _image_check(self, post: Post, acted_on: List[CopyTrade]) -> str:
         """What his picture says, so it's visible that it was read (and if it disagrees)."""
         if not post.image_text:
             return ""
-        named = image_symbols(post.image_text, {t.symbol for t in self.trades})
-        if not named:
-            return " · image read, no copied coin in it"
-        acted = {t.symbol for t in acted_on}
-        if acted and not acted & set(named):
-            return f" · ⚠ his image says {', '.join(named)}"
-        return f" · image says {', '.join(named)}"
+        cards = image_cards(post.image_text)
+        if cards:
+            if acted_on and not any(_fits(t, c) for t in acted_on for c in cards):
+                return f" · ⚠ his card shows {', '.join(c.describe() for c in cards)}"
+            return f" · card: {', '.join(c.describe() for c in cards)}"
+        chart = chart_symbol(post.image_text)
+        if chart:
+            acted = {t.symbol for t in acted_on}
+            return f" · ⚠ his chart shows {chart}" if acted and chart not in acted else f" · chart: {chart}"
+        return " · picture read (no trade card or chart in it)"
 
-    def _ignored(self, post: Post, sig: Signal) -> str:
+    def _ignored(self, post: Post, sig: Signal, how: str = "") -> str:
         """Say exactly why a sell/stop update had nothing to act on."""
-        if post.image_text and not sig.symbol and self._linked_trades(post) is None:
-            open_now = {t.symbol for t in self.trades if t.status == "open"}
-            named = image_symbols(post.image_text, open_now)
-            if len(named) > 1:
-                return f"ignored: his image names several open positions ({', '.join(named)}), not guessing"
-            if not named:
-                elsewhere = image_tickers(post.image_text)
-                return (f"ignored: his image says {', '.join(elsewhere)}, which the bot doesn't hold, not guessing"
-                        if elsewhere else "ignored: his image names none of the open positions, not guessing")
         def describe(t: CopyTrade) -> str:
             why = t.fills[-1].reason if t.fills else t.note or t.status
             return f"#{t.number} {t.symbol} ({t.status}: {why})"
+        if sig.leverage:
+            same = [t for t in self.trades if t.status == "open" and (not sig.symbol or t.symbol == sig.symbol)]
+            if same:
+                levs = ", ".join(sorted({f"{t.signal.leverage or t.leverage:g}x" for t in same}))
+                return f"ignored: he sold his {sig.leverage:g}x position; the copied one(s) are {levs}"
+        if how.startswith("card: "):
+            return f"ignored: his trade card shows {how[6:]}, not a position the bot copied"
+        if how.startswith("several: "):
+            return f"ignored: his picture names several open positions ({how[9:]}), not guessing"
+        if how.startswith("chart: "):
+            return f"ignored: his chart shows {how[7:]}, which the bot doesn't hold"
         replied = self._linked_trades(post)
         if replied:
             return f"ignored: he replied to {', '.join(describe(t) for t in replied)}, which is no longer open"
@@ -524,8 +569,19 @@ class CopyEngine:
             return f"ignored: no {sig.symbol} position was ever copied"
         if post.sell_only:
             return ("ignored: post in a discussion topic doesn't say what was sold "
-                    "(no coin, reply or picture), not guessing")
+                    "(no coin, reply or trade card), not guessing")
         return "ignored: no open position, and the post doesn't say what was sold"
+
+    def _card_price(self, post: Post, trade: CopyTrade) -> Optional[float]:
+        """Test on old posts: the mark price on his trade card, when it is his card of this position."""
+        if self.cfg.live_since:
+            return None
+        ref = self._price_at(trade.symbol, post.time)
+        for card in image_cards(post.image_text):
+            mark = _rescale(card.mark, ref)
+            if _fits(trade, card) and mark and ref and abs(mark / ref - 1) < 0.15:
+                return mark
+        return None
 
     def _seen_price(self, post: Post, symbol: str) -> Optional[float]:
         """Live account: the price captured when the bot saw the post, if any."""
@@ -537,7 +593,27 @@ class CopyEngine:
         i = self._index_at(symbol, t)
         return self._bars[symbol][i].timestamp if i is not None else t
 
+    def _resolve_add(self, post: Post, sig: Signal) -> Tuple[Optional[Signal], str]:
+        """'Longet mer' (reply) / 'Longer mer TESLA': the coin and his leverage come from that position."""
+        linked = self._linked_trades(post) or []
+        base = next((t for t in reversed(linked) if sig.symbol in (None, t.symbol)), None)
+        if base is None and sig.symbol:
+            base = next((t for t in reversed(self.trades) if t.symbol == sig.symbol and t.side == sig.side), None)
+        if base is None and sig.symbol is None:
+            return None, "ignored: he added to a position but names no coin and didn't reply to one of his trades"
+        symbol = sig.symbol or base.symbol
+        lev = sig.leverage or (base.signal.leverage if base else None)
+        note = f"adds to his {symbol} position" + (f" (#{base.number}, {lev:g}x)" if base and lev else "")
+        return replace(sig, symbol=symbol, leverage=lev, notes=sig.notes + [note]), ""
+
     def _apply_open(self, post: Post, sig: Signal) -> str:
+        if sig.add:
+            sig, why = self._resolve_add(post, sig)
+            if sig is None:
+                return why
+        card = next((c for c in image_cards(post.image_text) if c.symbol == sig.symbol and c.side == sig.side), None)
+        if sig.leverage is None and card and card.leverage:   # "Velger long META" + his 20x card
+            sig = replace(sig, leverage=card.leverage, notes=sig.notes + [f"{card.leverage:g}x from his trade card"])
         number = len(self.trades) + 1
         trade = CopyTrade(number, post.message_id, sig.symbol, sig.side, sig, post.time,
                           leverage=sig.leverage or 1.0, mm=self.cfg.maintenance_margin)
@@ -548,10 +624,6 @@ class CopyEngine:
             if trade.leverage > market_max:
                 capped = f" (his {trade.leverage:g}x capped to the market max {market_max:g}x)"
                 trade.leverage = market_max
-        trade.stop = trade.initial_stop = sig.stop_loss
-        trade.targets = list(sig.take_profits)
-        if sig.entry_low is not None:
-            trade.his_entry = (sig.entry_low + sig.entry_high) / 2
         self.trades.append(trade)
         self._link(post.message_id, trade)
         if not self._load(sig.symbol, post.time):
@@ -561,20 +633,36 @@ class CopyEngine:
         if i is None:
             trade.status, trade.note = "skipped", "post is newer than the price data"
             return f"#{number} skipped: no price after the post yet"
+        bars = self._bars[sig.symbol]
+        if bars[i].timestamp - post.time > max(timedelta(hours=3), 2 * self._interval[sig.symbol]):
+            trade.status, trade.note = "skipped", f"no price from when he posted (prices start {bars[0].timestamp:%Y-%m-%d})"
+            return f"#{number} skipped: {trade.note}"
         self._cursor[number] = i
-        bar = self._bars[sig.symbol][i]
+        bar = bars[i]
         price = bar.open
         seen = self._seen_price(post, sig.symbol)
+        card_entry = _rescale(card.entry, price) if card and not seen else None
         if seen:
             price, bar = seen, Bar(post.time, seen, seen, seen, seen)   # fill at the live price, now
+        elif card_entry and abs(card_entry / price - 1) < 0.15:
+            price = card_entry   # test on old posts: his own fill from the card in this post
+        trade.stop = trade.initial_stop = _rescale(sig.stop_loss, price)
+        trade.targets = [_rescale(tp, price) for tp in sig.take_profits]
+        low, high = _rescale(sig.entry_low, price), _rescale(sig.entry_high, price)
+        if low is not None:
+            trade.his_entry = (low + high) / 2
+        d = trade.direction
+        if trade.stop and d * (price - trade.stop) <= 0 and (trade.his_entry is None or low is None):
+            trade.status = "skipped"
+            trade.note = f"price {price:g} already past his stop {trade.stop:g}"
+            return f"#{number} not bought: {trade.note}"
         if trade.his_entry is None:
             trade.his_entry = price
             self._open(trade, bar.timestamp, price)
             if trade.status == "skipped":
                 return f"#{number} not bought: {trade.note} (all margin is in open positions)"
             return f"#{number} opened at {price:g} (market){self._size_note(trade)}{capped}"
-        d = trade.direction
-        edge = sig.entry_high if d == 1 else sig.entry_low
+        edge = high if d == 1 else low
         if d * (price - edge) <= edge * self.cfg.max_slippage_pct:
             self._open(trade, bar.timestamp, price)
             if trade.status == "skipped":

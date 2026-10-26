@@ -50,6 +50,7 @@ NAMES = {
     "GULL": "GOLD", "SØLV": "SILVER", "SOLV": "SILVER", "OLJE": "CL", "OIL": "CL",
     "BRENT": "BRENTOIL", "S&P500": "SP500", "SP500": "SP500", "SPX500": "SP500",
     "SPX": "SP500", "US500": "SP500", "NASDAQ": "XYZ100", "NAS100": "XYZ100",
+    "META": "META", "GOLD": "GOLD", "SILVER": "SILVER",
 }
 MULTIWORD = [  # joined before matching so "WESTERN DIGITAL LONG" works
     (r"western\s+digital", "WDC"), (r"s\s*&\s*p\s*500", "S&P500"), (r"sk\s+hynix", "SKHX"),
@@ -67,7 +68,9 @@ NOT_SYMBOLS = {
     "VIP", "ALERT", "NEWS", "WAGMI", "NGMI", "IMO", "IMHO", "FYI", "BTW", "ASAP", "SWING",
     "SCALP", "HALF", "NOT", "DO", "DONT", "WAIT", "HOLD", "TPS", "SLS", "LEVELS", "ZONE",
     "HELE", "ALT", "RESTEN", "HALVPARTEN", "HALVE", "HALV", "HER", "FOR", "LETT", "ENKELT",
-    "HØYERE", "LAVERE", "SOLGT", "KJØPT", "BOOM", "RISKY", "INNE", "MED", "PÅ", "SUPPORT",
+    "HØYERE", "LAVERE", "SOLGT", "KJØPT", "BOOM", "RISKY", "INNE", "MED", "PÅ", "SUPPORT", "SOLGTE",
+    "SELGER", "LIQUID", "PROP", "PROPPEN", "SIZEPROP", "DE", "DEN", "DERE", "VIL", "HA", "GG", "MVH",
+    "DISSE", "DENNE", "JA", "NEI", "TAKK", "MEG", "NOK", "TROR", "SÅ", "OM", "YOLO", "ATH", "ZZZ",
     "RESISTANCE", "LONGER", "SHORTER", "GIRING", "ENNÅ", "INGEN", "MEGA", "BRA", "UT", "SER",
     "NY", "UKE", "OPP", "NED", "JEG", "VI", "DU", "ER", "DET", "SOM", "MEN", "AV", "TIL",
     "FRA", "NOE", "LITT", "MYE", "BARE", "OGSÅ", "GO", "LETS", "LET'S",
@@ -91,6 +94,7 @@ class Signal:
     size_pct: Optional[float] = None     # fraction of the account used as margin
     size_scale: float = 1.0              # "in with 33% of the full position" -> 0.33
     confidence: str = "normal"           # very_risky | risky | normal | strong (from his wording)
+    add: bool = False                    # "longer mer": adds to his position (symbol may come from a reply)
     close_fraction: float = 1.0          # for close: share of the position to close
     new_stop: Optional[float] = None     # for move_sl
     stop_to_entry: bool = False          # for move_sl: break-even
@@ -105,7 +109,8 @@ class Signal:
             entry = ("market" if self.market or self.entry_low is None
                      else f"{self.entry_low:g}" if self.entry_low == self.entry_high
                      else f"{self.entry_low:g}-{self.entry_high:g}")
-            parts = [f"OPEN {self.side.upper()} {self.symbol}", f"entry {entry}",
+            parts = [f"{'ADD TO' if self.add else 'OPEN'} {self.side.upper()} {self.symbol or '(replied position)'}",
+                     f"entry {entry}",
                      f"SL {self.stop_loss:g}" if self.stop_loss else "no SL"]
             if self.take_profits:
                 parts.append("TP " + "/".join(f"{tp:g}" for tp in self.take_profits))
@@ -200,7 +205,7 @@ def normalize_symbol(token: str) -> Optional[str]:
         return NAMES[up]
     if not t or up in NOT_SYMBOLS:
         return None
-    if not re.fullmatch(r"[A-Z0-9&]{2,10}", up) or up.isdigit():
+    if not re.fullmatch(r"[A-Z][A-Z0-9&]{1,9}", up):   # never "10X" or "4K"
         return None
     if tagged or up in KNOWN_COINS or t.isupper():
         return up
@@ -241,24 +246,84 @@ def _symbol(text: str) -> Optional[str]:
     return None
 
 
-_SYMS = r"[$#]?[\w&.]+(?:\s+(?:og|and|&|\+)\s+[$#]?[\w&.]+)*"
-HEADLINE_SYMBOL_FIRST = re.compile(rf"(?P<syms>{_SYMS})\s+(?P<side>long|short)\b", re.IGNORECASE)
-HEADLINE_SIDE_FIRST = re.compile(
-    rf"\b(?P<side>long(?:er)?|short(?:er)?|kjøper|buy(?:ing)?)\s+(?P<syms>{_SYMS})", re.IGNORECASE)
+SIDE_WORD = re.compile(r"\b(long(?:er|et|e)?|short(?:er|et|e)?|kjøper|buy(?:ing)?)\b", re.IGNORECASE)
+_ADD = re.compile(r"[ \t]+(?:(?:en\s+god\s+del|mye|litt|enda)\s+)?(?:mer|more)\b", re.IGNORECASE)
+_NEXT_TOKEN = re.compile(r"[ \t]*([$#]?[\w&.]+)")
+_JOIN_AFTER = re.compile(r"[ \t]+(?:og|and|&|\+)[ \t]+", re.IGNORECASE)
+_LAST_TOKEN = re.compile(r"([$#]?[\w&.]+)[ \t]+$")
+_JOIN_BEFORE = re.compile(r"(?:^|[ \t])(?:og|and|&|\+)[ \t]+$", re.IGNORECASE)
+CALL_VERB = re.compile(r"\b(?:velger|går|gå|kjører|tar|åpner|åpnet)\b", re.IGNORECASE)
+HEDGE = re.compile(r"\b(?:tenker|vurderer|kanskje|tror|kan|skal|om|hvis|planlegger|fristende|kommer\s+til\s+å)\b",
+                   re.IGNORECASE)
 
 
-def _headline(text: str):
-    """(side, [symbols], end) for 'GOOGLE LONG' / 'LONGER BLOOM OG WESTERN' / 'LONG $SOL'."""
-    for pattern in (HEADLINE_SYMBOL_FIRST, HEADLINE_SIDE_FIRST):
-        for m in pattern.finditer(text):
-            side = "short" if m.group("side").lower().startswith("short") else "long"
-            tokens = re.split(r"\s+(?:og|and|&|\+)\s+", m.group("syms"), flags=re.IGNORECASE)
-            if pattern is HEADLINE_SYMBOL_FIRST:
-                tokens = [tokens[0].split()[-1]] + tokens[1:] if tokens else tokens
-            symbols = [s for s in (normalize_symbol(t) for t in tokens) if s]
-            if symbols and len(symbols) == len(tokens):
-                return side, list(dict.fromkeys(symbols)), m.end()
-    return None, [], 0
+@dataclass
+class _Head:
+    """One 'SYMBOL(S) + LONG/SHORT' in a post."""
+
+    side: str
+    symbols: List[str]
+    start: int
+    end: int
+    symbol_first: bool = False   # "GOOGLE LONG" rather than "LONG GOOGLE"
+    add: bool = False            # "longer mer TESLA" / "longet mer"
+    verb: bool = False           # "velger long META", "går long" on the same line
+
+
+def _symbols_after(text: str, pos: int):
+    symbols, end = [], pos
+    m = _NEXT_TOKEN.match(text, pos)
+    while m:
+        symbol = normalize_symbol(m.group(1))
+        if not symbol:
+            break
+        symbols.append(symbol)
+        end = m.end()
+        join = _JOIN_AFTER.match(text, end)
+        m = _NEXT_TOKEN.match(text, join.end()) if join else None
+    return symbols, end
+
+
+def _symbols_before(text: str, pos: int):
+    symbols, start = [], pos
+    while True:
+        m = _LAST_TOKEN.search(text[:start])
+        symbol = normalize_symbol(m.group(1)) if m else None
+        if not symbol:
+            break
+        symbols.insert(0, symbol)
+        start = m.start()
+        join = _JOIN_BEFORE.search(text[:start])
+        if not join:
+            break
+        start = join.start()
+    return symbols, start
+
+
+def _headlines(text: str) -> List[_Head]:
+    """Every 'GOOGLE LONG' / 'LONGER BLOOM OG WESTERN' / 'velger long A og B + short C'."""
+    heads: List[_Head] = []
+    for m in SIDE_WORD.finditer(text):
+        if re.match(r"\s*/\s*(?:long|short)", text[m.end():], re.IGNORECASE) or \
+                re.search(r"(?:long|short)\s*/\s*$", text[:m.start()], re.IGNORECASE):
+            continue   # "går long/short når vi nærmer oss"
+        side = "short" if m.group(1).lower().startswith("short") else "long"
+        add = _ADD.match(text, m.end())
+        before, b_start = _symbols_before(text, m.start())
+        after, a_end = _symbols_after(text, add.end() if add else m.end())
+        if before and not add:
+            head = _Head(side, before, b_start, m.end(), symbol_first=True)
+        elif after:
+            head = _Head(side, after, m.start(), a_end, add=bool(add))
+        elif add:
+            head = _Head(side, [], m.start(), add.end(), add=True)
+        else:
+            continue
+        line_start = text.rfind("\n", 0, head.start) + 1
+        before_head = text[line_start:head.start]
+        head.verb = bool(CALL_VERB.search(before_head)) and not HEDGE.search(before_head)
+        heads.append(head)
+    return heads
 
 
 def _side(lower: str, has_levels: bool) -> Optional[str]:
@@ -277,29 +342,73 @@ def _first(pattern: str, text: str) -> Optional[re.Match]:
     return re.search(pattern, text, re.IGNORECASE)
 
 
+# "close" alone is mostly about candles ("1h close", "nydelig close"): a sell only with an object.
 CLOSE_WORDS = re.compile(
-    r"(?<!candle\s)(?<!candles\s)\b(?:close[ds]?|closing)\b"
-    r"(?!\s+(?:to|til|by|near|above|below|over|under|green|red|nok|inn)\b)"
-    r"|\b(?:solgt|selger|selg|sold|selling|exit(?:ed|ing)?|lukk\w*|stengt|cut(?:ting)?|kutt\w*|"
-    r"tok\s+profitt|tar\s+profitt|tatt\s+profitt|ute\s+av|out\s+of|"
+    r"\b(?:close[ds]?|closing)\b(?=\s+(?:all|half|everything|here|now|the\s+(?:trade|position)|my|our|position|trade|"
+    r"it\b|\d{1,3}\s*%|(?-i:[$#]?[A-Z]{2,10}\b)))"
+    r"|\b(?:solgt\w*|selger|selges?|selg|sold|selling|exit(?:ed|ing)?(?!\s+plan)|lukk\w*|stengt|"
+    r"cut(?:ting)?\s+(?:loss\w*|the\s+(?:trade|position)|it)|kutt(?:er|et)?\s+(?:tap\w*|posisjon\w*|denne|den|hele|alt)|"
+    r"tok\s+profitt|tar\s+profitt|tatt\s+profitt|ute\s+av\s+(?:denne|den|traden|posisjonen|hele)|"
+    r"out\s+of\s+(?:the|this|my)\s+(?:trade|position)|takk\s+for\s+meg|"
     r"take\s+(?:some\s+)?profits?\s+(?:now|here)|ta\s+(?:litt\s+)?gevinst|secur\w+\s+profits?)\b",
     re.IGNORECASE)
-# "Om vi closer under boksen så selger jeg" / "selger når vi treffer $120": a plan, not a sell now.
-IF_BEFORE = re.compile(r"\b(?:om|hvis|dersom|if|unless)\b", re.IGNORECASE)
+# "om vi lukker under X så selger jeg", "selger når vi treffer $X", "selger ved $X",
+# "tror jeg selger ikveld", "kan selge 50%": a plan, not a sell now.
+IF_BEFORE = re.compile(r"\b(?:om|hvis|dersom|if|unless|evt|eventuelt|kanskje|tror|vurderer|kan|skal|vel|"
+                       r"kommer\s+til\s+å|planlegger)\b", re.IGNORECASE)
 IF_AFTER = re.compile(r"[^.!?\n…]{0,25}?\b(?:når|om|hvis|dersom|if|when|once)\s+"
                       r"(?:vi|den|prisen|kursen|it|price|we|\$?\d)", re.IGNORECASE)
-# "For øyeblikket long HOOD" / "fortsatt long": a position he already has, not a new call.
-STATUS = re.compile(r"\b(?:for\s+øyeblikket|per\s+nå|fortsatt|fremdeles|still|currently|sitter)\s+(?:\w+\s+){0,2}?"
-                    r"(?:long|short)\b")
+LATER = re.compile(r"[ \t]+(?:\w+[ \t]+){0,2}?(?:nok|evt|kanskje|i\s+dag\s+før|ikveld|i\s+kveld|i\s+morgen|"
+                   r"før\s+(?:kl|jeg|leggetid)|etter\s+(?:noen|kl)|(?:ved|på|at|@)\s*\$?\d)", re.IGNORECASE)
+PAST_CLOSE = re.compile(r"solgt\w*|sold|stengt|lukket|exited|closed", re.IGNORECASE)
+# "for øyeblikket er jeg long X" / "fortsatt long" / "er long X": already in it.
+STATUS = re.compile(r"\b(?:for\s+øyeblikket|per\s+nå|fortsatt|fremdeles|still|currently|sitter|er)\s+"
+                    r"(?:\w+\s+){0,3}?(?:long|short)\b")
+# "bruker 10X giring kl HH:MM", "går inn kl HH:MM", "går short nøyaktig kl HH": later.
+FUTURE_ENTRY = re.compile(
+    r"\b(?:går\s+inn|g[åa]r?\s+(?:long|short)|longer|shorter|kjøper|bruker\s+\d{1,3}\s*x(?:\s+giring)?)"
+    r"[^.\n(]{0,25}?\b(?:kl\.?\s*\d{1,2}[:.]\d{2}|i\s+morgen)\b|\bnøyaktig\s+kl\b"
+    r"|\b(?:kl\.?\s*\d{1,2}[:.]\d{2}|i\s+morgen)\b[^.\n(]{0,25}?\b(?:går\s+inn|longer|shorter)\b", re.IGNORECASE)
+# SizeProp/prop-firm accounts are not Liquid: those clauses are left out.
+OTHER_PLATFORM = re.compile(r"\bsize\s*prop\w*|\bprop(?:pen|firm\w*)?\b|\bpå\s+size\b|\bstonkex\b|\bpå\s+fomo\b",
+                            re.IGNORECASE)
 
 
 def _conditional(raw: str, close: re.Match) -> bool:
     start = max(raw.rfind(c, 0, close.start()) for c in ".!?:;\n…") + 1
-    return bool(IF_BEFORE.search(raw[start:close.start()]) or IF_AFTER.match(raw, close.end()))
+    if IF_BEFORE.search(raw[start:close.start()]) or IF_AFTER.match(raw, close.end()):
+        return True
+    return not PAST_CLOSE.fullmatch(close.group(0)) and bool(LATER.match(raw, close.end()))
 
 
-STOP_LEVEL = (r"(?:\bsl\b|stop[\s-]?loss|\bstop(?:p)?(?:[\s-]?loss)?\b|invalidation)\s*[:=@\-]?\s*"
-              r"(?:at|på|ved|under|below|over|above|rundt)?\s*\$?(" + NUM + r")(k)?")
+def _liquid_only(text: str):
+    """The post without clauses about SizeProp/prop accounts, and whether any were dropped."""
+    lines, dropped = [], False
+    for line in text.split("\n"):
+        parts = re.split(r"(\s+\+\s+|,\s+)", line)
+        kept = []
+        for i in range(0, len(parts), 2):
+            if OTHER_PLATFORM.search(parts[i]):
+                dropped = True
+            else:
+                kept.append((parts[i - 1] if i and kept else "") + parts[i])
+        lines.append("".join(kept))
+    return "\n".join(lines), dropped
+
+
+# A level, never leverage ("100x") or a percentage ("-10%").
+_NO_X_PCT = r"(?![\d.,]*\s*(?:x\b|%))"
+STOP_LEVEL = (r"(?:\bsl\b|stop[\s-]?loss|\bstop(?:p)?(?:[\s-]?loss)?\b|invalidation)[ \t]*[:=@\-]?[ \t]*"
+              r"(?:at|på|ved|under|below|over|above|rundt)?[ \t]*\$?(" + NUM + r")(k)?" + _NO_X_PCT)
+LOOSE_STOP = r"\b(?:sl|stop\w*)\b[^\d$\n-]{0,30}?\$?(" + NUM + r")(k)?" + _NO_X_PCT
+MOVE_VERB = re.compile(
+    r"\b(?:move|moving|flytt\w*|set|sett|juster\w*|trail|plasser\w*)\s+(?:the\s+|my\s+)?(?:sl|stop(?:p)?(?:[\s-]?loss)?)\b"
+    r"|\b(?:sl|stop(?:p)?(?:[\s-]?loss)?)\s+(?:plassert|flyttet|satt)\b"
+    r"|\b(?:sl|stop(?:p)?(?:[\s-]?loss)?)\s*(?:to|til|->|→|=|@)\s*(?:entry|be\b|break[\s-]?even|inngang|\$?" + NUM + ")",
+    re.IGNORECASE)
+# "COIN SL i profitt ved $X" on its own line (one per coin).
+LINE_MOVE = re.compile(r"^[ \t]*([$#]?[A-Za-z][\w&]*)[ \t]+(?:sl|stop\w*)\b[^\n]*?\$?(" + NUM + r")(k)?" + _NO_X_PCT,
+                       re.IGNORECASE | re.MULTILINE)
 
 # How sure he sounds -> how big the copy is (multipliers in CopyConfig / .env).
 CONFIDENCE_LABELS = {"very_risky": "very risky: much smaller size", "risky": "risky: smaller size",
@@ -321,7 +430,7 @@ STRONG = re.compile(
 
 
 # A real call has leverage, a stop, levels or 🔼/🔽 right after "HOOD LONG"; chat that
-# mentions a side ("kvartalsrapport for HOOD … short") or a meme caption never does.
+# mentions a side ("rapport for X … short") or a meme caption never does.
 JOKE = re.compile(r"[😂🤣😆😅💀🙈]|\b(?:haha\w*|hehe\w*|lol|lmao|meme\w*)\b")
 TRADE_MARK = re.compile(r"[🔼🔽📈📉]")
 
@@ -347,19 +456,22 @@ def _confidence(sig: Signal, lower: str) -> None:
         sig.notes.append(f"he says '{strong.group(0)}': {CONFIDENCE_LABELS['strong']}")
 
 
-def _close_signal(raw: str, lower: str, close: re.Match) -> Signal:
-    after = raw[close.end():close.end() + 80]
-    symbol = None
-    for token in re.findall(r"[$#]?[\w&.]+", after)[:6]:
+def _close_signal(raw: str, lower: str, close: re.Match, sold: Optional[str] = None) -> Signal:
+    line_end = raw.find("\n", close.end())
+    after = raw[close.end():line_end if line_end >= 0 else len(raw)][:80]   # the coin is on the same line
+    symbol = sold
+    for token in ([] if symbol else re.findall(r"[$#]?[\w&.]+", after)[:6]):
         symbol = normalize_symbol(token)
         if symbol:
             break
-    if symbol is None:   # "Nydelig long på AMD 🔼 Selger hele nå"
+    if symbol is None:   # "fin long på X 🔼 selger hele nå"
         named = re.search(r"\b(?:long|short)\w*\s+(?:på|on|i|in)\s+([$#]?[\w&.]+)", raw, re.IGNORECASE)
         symbol = normalize_symbol(named.group(1)) if named else None
-    if symbol is None:
-        symbol = _known_symbol(raw)
     sig = Signal("close", symbol=symbol)
+    lev = re.search(r"\b(\d{1,3})\s*x\b", after, re.IGNORECASE)   # "solgt 100x, beholder 40x"
+    if lev:
+        sig.leverage = float(lev.group(1))
+        sig.notes.append(f"his {lev.group(1)}x position")
     pct = (re.search(r"(?<![+\-\d])(\d{1,3})\s*%\s*(?:of|av)\b", lower)
            or re.search(r"\b(?:close|closing|lukk\w*|selger|solgt|sell\w*|take|ta)\b\D{0,15}?(?<![+\-\d])(\d{1,3})\s*%", lower))
     if re.search(r"\b(half|halv\w*|50\s*%)", lower):
@@ -458,6 +570,82 @@ def image_tickers(text: str) -> List[str]:
     return found
 
 
+def _all_symbols(text: str) -> List[str]:
+    """Every coin/stock the post names for sure ($TAG, known coin, company name, a lone first line)."""
+    found = [normalize_symbol("$" + t) for t in re.findall(r"[$#]([A-Za-z][A-Za-z0-9]{0,9})\b", text)]
+    for token in re.findall(r"[A-Za-zÆØÅæøå&][A-Za-z0-9ÆØÅæøå&]{0,13}", text):
+        up = token.upper()
+        if up in NAMES and token[0].isupper():
+            found.append(NAMES[up])
+        elif (token.isupper() and up in KNOWN_COINS) or token in SAFE_LOWER:
+            found.append(up)
+    first = text.strip().split("\n")[0].strip()
+    if re.fullmatch(r"[$#]?[A-Z][A-Z0-9&]{1,9}", first):   # "NETFLIX" alone on the first line
+        found.append(normalize_symbol(first))
+    return [s for s in dict.fromkeys(found) if s]
+
+
+PROSE_SIDE = re.compile(r"\b(?:gå|går|kjører|tar|velger)\s+(?:å\s+)?(?:gå\s+)?(long|short)\b", re.IGNORECASE)
+LEVERAGE = re.compile(r"\b\d{1,3}(?:[.,]\d)?\s*x\b", re.IGNORECASE)
+
+
+def _prose_call(raw: str, lower: str) -> Optional[Signal]:
+    """'Rapport for <company> … velger å gå long med 10X giring' / '<COMPANY> … opp 🔼 … 10X giring'."""
+    if not LEVERAGE.search(raw):
+        return None
+    m = PROSE_SIDE.search(raw)
+    ups, downs = sum(raw.count(c) for c in "🔼📈"), sum(raw.count(c) for c in "🔽📉")
+    if m:
+        side = m.group(1).lower()
+    elif ups and not downs and re.search(r"\b(?:opp|up|pump\w*)\b", lower):
+        side = "long"
+    elif downs and not ups and re.search(r"\b(?:ned|down|dump\w*)\b", lower):
+        side = "short"
+    else:
+        return None
+    symbols = _all_symbols(raw)
+    if len(symbols) != 1:
+        return None
+    sig = _open_details(Signal("open", symbol=symbols[0], side=side), raw, lower)
+    sig.notes.insert(0, f"call written out in words: {side} {symbols[0]}")
+    return sig
+
+
+def _moves(raw: str, lower: str) -> List[Signal]:
+    """Stop-loss moves: one per 'COIN SL …' line, else one for the post."""
+    per_line = []
+    for m in LINE_MOVE.finditer(raw):
+        symbol = normalize_symbol(m.group(1))
+        if symbol:
+            stop = to_float(m.group(2)) * (1000 if m.group(3) else 1)
+            per_line.append(Signal("move_sl", symbol=symbol, new_stop=stop, notes=[f"new stop {stop:g}"]))
+    if per_line:
+        return per_line
+    move = MOVE_VERB.search(raw)
+    stop_level = _first(STOP_LEVEL, raw) or _first(LOOSE_STOP, raw)
+    has_levels = bool(_first(r"\b(?:entry|inngang)\b", raw) or _take_profits(raw))
+    if not (move or (stop_level and not has_levels and not _side(lower, False))):
+        return []
+    before_sl = re.search(r"([$#]?[A-Za-z][\w&]*)[ \t]+(?:sl|stop)\b", raw, re.IGNORECASE)
+    symbol = _known_symbol(raw) or (normalize_symbol(before_sl.group(1)) if before_sl else None)
+    sig = Signal("move_sl", symbol=symbol)
+    tail = raw[move.start():] if move else raw
+    if re.search(r"\b(entry|be|break[\s-]?even|breakeven|inngang|kjøpspris)\b", tail, re.IGNORECASE):
+        sig.stop_to_entry = True
+        sig.notes.append("stop to entry (break-even)")
+        return [sig]
+    number = re.search(r"(?:to|til|->|→|=|@|på|at|ved)\s*\$?(" + NUM + r")(k)?" + _NO_X_PCT, tail, re.IGNORECASE) \
+        or stop_level
+    if number:
+        sig.new_stop = to_float(number.group(1)) * (1000 if number.group(2) else 1)
+        sig.notes.append(f"new stop {sig.new_stop:g}")
+        return [sig]
+    return [Signal("info", notes=["mentions the stop but no new level found"])]
+
+
+_SOLD_GAP = re.compile(r"[ \t]+(?:(?:min|mine|hele|denne|den|å|alt)[ \t]+)*$", re.IGNORECASE)
+
+
 def parse_signals(text: str) -> List[Signal]:
     """All instructions in one post (e.g. two trades, or a close plus a new trade)."""
     if not text or not text.strip():
@@ -465,70 +653,81 @@ def parse_signals(text: str) -> List[Signal]:
     raw = _join_thousands(text)
     for pattern, replacement in MULTIWORD:
         raw = re.sub(pattern, replacement, raw, flags=re.IGNORECASE)
+    raw, other_platform = _liquid_only(raw)
+    if not raw.strip():
+        return [Signal("info", notes=["only about SizeProp/prop accounts, not Liquid"])]
     lower = raw.lower()
+    out = _parse(raw, lower, other_platform)
+    if other_platform:
+        for sig in out:
+            sig.notes.append("parts about SizeProp/prop accounts ignored (not Liquid)")
+    return out
 
+
+def _parse(raw: str, lower: str, other_platform: bool) -> List[Signal]:
     if re.search(r"\b(tp\s*\d|target\s*\d|mål\s*\d)\s*(hit|reached|nådd|tatt|done|✅)", lower):
         return [Signal("info", symbol=_symbol(raw), notes=["target-hit announcement; targets are tracked from prices"])]
     if re.search(r"\b(cancel\w*|avbryt\w*|kanseller\w*|ignore\s+(this|the)\s+(signal|trade|entry))\b", lower):
         return [Signal("cancel", symbol=_symbol(raw), notes=["cancel pending entry"])]
 
-    head_side, head_symbols, head_end = _headline(raw)
+    heads = _headlines(raw)
+    if any(h.symbols for h in heads):
+        heads = [h for h in heads if h.symbols]   # "TESLA LONG 🔼 … longet mer nå" is one call
     closes = list(CLOSE_WORDS.finditer(raw))
     plans = [m for m in closes if _conditional(raw, m)]
     close = next((m for m in closes if m not in plans), None)
-    notes = [f"'{m.group(0)}' is a plan ('if … I sell'), not a sell now" for m in plans[:1]]
+    notes = [f"'{m.group(0)}' is a plan ('if/when … I sell'), not a sell now" for m in plans[:1]]
+    # "selger X long nå": the headline right after the sell word is what he sold.
+    sold = [h for h in heads if close and h.symbol_first and h.start >= close.end()
+            and _SOLD_GAP.fullmatch(raw[close.end():h.start] or " ")]
+    heads = [h for h in heads if h not in sold]
     out: List[Signal] = []
-    # A close word before the headline ("SOLGT TESLA, LONGER NVIDIA") is its own instruction;
+    # A sell word before the headline ("SOLGT TESLA, LONGER NVIDIA") is its own instruction;
     # one after it is part of the trade's text.
-    if close and (not head_symbols or close.start() < _headline_start(raw)):
-        out.append(_close_signal(raw, lower, close))
+    if close and (not heads or close.start() < heads[0].start):
+        out.append(_close_signal(raw, lower, close, sold[0].symbols[0] if sold else None))
 
-    if head_symbols and STATUS.search(lower):   # "For øyeblikket long HOOD" = already in it
-        if close and not out:                   # "..., men SOLGT NVIDIA"
+    if heads and STATUS.search(lower):   # "For øyeblikket long HOOD" = already in it
+        if close and not out:            # "..., men SOLGT NVIDIA"
             out.append(_close_signal(raw, lower, close))
-        return out + [Signal("info", symbol=head_symbols[0], side=head_side, notes=[
-            f"status update: he is already {head_side} {', '.join(head_symbols)}, not a new buy"] + notes)]
-    if head_symbols:
-        for sym in head_symbols:
-            sig = _open_details(Signal("open", symbol=sym, side=head_side), raw, lower)
-            if not _has_trade_details(sig, raw, head_end):
+        h = heads[0]
+        return out + [Signal("info", symbol=(h.symbols or [None])[0], side=h.side, notes=[
+            f"status update: he is already {h.side} {', '.join(h.symbols)}, not a new buy"] + notes)]
+    future = FUTURE_ENTRY.search(raw)
+    count = sum(len(h.symbols) or 1 for h in heads)
+    for h in heads:
+        for sym in h.symbols or [None]:
+            sig = _open_details(Signal("open", symbol=sym, side=h.side, add=h.add), raw, lower)
+            what = f"{sym or 'his position'} {h.side}"
+            if future:
+                sig = Signal("info", symbol=sym, side=h.side, notes=[
+                    f"plan for later ('{future.group(0).strip()}'): not bought now"])
+            elif not (_has_trade_details(sig, raw, h.end) or h.verb or h.add):
                 why = "looks like a joke/meme (😂, haha)" if JOKE.search(lower) else "chat, not a call"
-                sig = Signal("info", symbol=sym, side=head_side, notes=[
-                    f"{why}: no leverage, stop, levels or 🔼/🔽 next to '{sym} {head_side}', not bought"])
+                sig = Signal("info", symbol=sym, side=h.side, notes=[
+                    f"{why}: no leverage, stop, levels or 🔼/🔽 next to '{what}', not bought"])
+            elif h.add:
+                sig.notes.insert(0, f"adds to {what}")
+            if count > 1:
+                sig.notes.append(f"one of {count} trades in the same post")
             out.append(sig)
-        if len(head_symbols) > 1:
-            for sig in out[-len(head_symbols):]:
-                sig.notes.append(f"one of {len(head_symbols)} trades in the same post")
-        return out
+    moves = [] if other_platform else _moves(raw, lower)
     if out:
+        if any(s.action == "close" for s in out):   # "selger 25% og plasserer SL i profitt på $X"
+            out += [m for m in moves if m.action == "move_sl"]
         return out
     if plans:
         return [Signal("info", symbol=_known_symbol(raw), notes=notes)]
-
-    move = re.search(
-        r"\b(?:move|moving|flytt\w*|set|sett|juster\w*|trail)\s+(?:the\s+|my\s+)?(?:sl|stop(?:p)?(?:[\s-]?loss)?)\b"
-        r"|\b(?:sl|stop(?:p)?(?:[\s-]?loss)?)\s*(?:to|til|->|→|=|@)\s*(?:entry|be\b|break[\s-]?even|inngang|\$?" + NUM + ")",
-        lower)
-    stop_level = _first(STOP_LEVEL, raw) or _first(r"\b(?:sl|stop\w*)\b[^\d$\n]{0,30}?\$?(" + NUM + r")(k)?", raw)
-    has_levels = bool(_first(r"\b(?:entry|inngang)\b", raw) or _take_profits(raw))
-    if move or (stop_level and not has_levels and not _side(lower, False)):
-        sig = Signal("move_sl", symbol=_symbol(raw) if re.search(r"[$#]\w|\b[A-Z]{2,5}\b", raw) else None)
-        tail = lower[move.start():] if move else lower
-        if re.search(r"\b(entry|be|break[\s-]?even|breakeven|inngang|kjøpspris)\b", tail):
-            sig.stop_to_entry = True
-            sig.notes.append("stop to entry (break-even)")
-            return [sig]
-        number = re.search(r"(?:to|til|->|→|=|@|på|at)\s*\$?(" + NUM + r")(k)?", tail) or stop_level
-        if number:
-            sig.new_stop = to_float(number.group(1)) * (1000 if number.group(2) else 1)
-            sig.notes.append(f"new stop {sig.new_stop:g}")
-            if sig.symbol and sig.symbol in NOT_SYMBOLS:
-                sig.symbol = None
-            return [sig]
-        return [Signal("info", notes=["mentions moving the stop but no new level found"])]
+    if moves:
+        return moves
+    prose = _prose_call(raw, lower)
+    if prose:
+        return [Signal("info", symbol=prose.symbol, side=prose.side, notes=[
+            f"plan for later ('{future.group(0).strip()}'): not bought now"])] if future else [prose]
 
     # Classic labelled signal (entry/SL/TP) without a headline.
     stop_m = _first(STOP_LEVEL, raw)
+    has_levels = bool(_first(r"\b(?:entry|inngang)\b", raw) or _take_profits(raw))
     if stop_m or has_levels:
         side, symbol = _side(lower, True), _symbol(raw)
         if side and symbol:
@@ -536,11 +735,6 @@ def parse_signals(text: str) -> List[Signal]:
     side, symbol = _side(lower, False), _symbol(raw)
     missing = [n for n, v in (("direction (long/short) next to the coin", side and symbol), ) if not v]
     return [Signal("info", symbol=symbol, side=side, notes=["no trade: missing " + ", ".join(missing)])]
-
-
-def _headline_start(text: str) -> int:
-    starts = [m.start() for p in (HEADLINE_SYMBOL_FIRST, HEADLINE_SIDE_FIRST) for m in p.finditer(text)]
-    return min(starts) if starts else len(text)
 
 
 def parse_signal(text: str) -> Signal:
