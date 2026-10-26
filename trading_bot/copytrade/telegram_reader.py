@@ -18,7 +18,9 @@ from ..config import get_settings
 from ..storage.database import init_db
 from .parser import parse_signals
 from .prices import CandleFeed
-from .store import delete_chat_posts, get_live_since, save_message, save_snapshot, set_live_since
+from .ocr import image_text
+from .store import (delete_chat_posts, get_live_since, has_image_text, save_image_text,
+                    save_message, save_snapshot, set_live_since)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,25 @@ def _sender_name(msg) -> Optional[str]:
     return f"@{username}" if username else (name or getattr(sender, "title", None))
 
 
+def _is_image(msg) -> bool:
+    file = getattr(msg, "file", None)
+    mime = getattr(file, "mime_type", "") or ""
+    return bool(getattr(msg, "photo", None)) or mime.startswith("image/")
+
+
+async def _read_image(chat_id, msg) -> Optional[str]:
+    """Download one of his images and read its text on this computer (once per image)."""
+    if not _is_image(msg) or has_image_text(str(chat_id), msg.id):
+        return None
+    if (getattr(msg.file, "size", 0) or 0) > 10_000_000:
+        return None
+    data = await msg.download_media(file=bytes)
+    text = await asyncio.get_running_loop().run_in_executor(None, image_text, data) if data else None
+    if text is not None:
+        save_image_text(str(chat_id), msg.id, text)
+    return text
+
+
 def _save(chat_id, msg) -> str:
     return save_message(str(chat_id), msg.id, _utc(msg.date), msg.message or "",
                         _sender_name(msg), _reply_id(msg))
@@ -188,7 +209,7 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
     since = datetime.utcnow() - timedelta(days=days)
     for topic_id in topic_ids or [None]:
         counts = {"new": 0, "edited": 0, "same": 0}
-        images_only = 0
+        images_only = images_read = 0
         if topic_id is None:
             messages = client.iter_messages(entity, from_user=who)
         elif topic_id == GENERAL_TOPIC:
@@ -206,8 +227,12 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
                 continue
             images_only += not msg.message
             counts[_save(entity.id, msg)] += 1   # images too, so replies to them can be followed
+            if await _read_image(entity.id, msg):
+                images_read += 1
         where = f" in topic {topic_id}" if topic_id is not None else ""
-        extra = f", {images_only} of them images (content can't be read)" if images_only else ""
+        extra = f", {images_only} of them image-only" if images_only else ""
+        if images_read:
+            extra += f", text read from {images_read} images"
         print(f"Fetched {sum(counts.values())} posts{where} from the last {days} days "
               f"({counts['new']} new{extra}).")
 
@@ -240,7 +265,9 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
         if not msg.message:
             if msg.media:
                 _save(entity.id, msg)
-                print(f"[{stamp} UTC] image saved (its content can't be read; replies to it are followed)")
+                read = await _read_image(entity.id, msg)
+                shown = f"text {read[:60]!r}" if read else "no readable text"
+                print(f"[{stamp} UTC] image saved ({shown}); replies to it are followed")
             return
         signals = parse_signals(msg.message)
         seen = datetime.utcnow()
@@ -248,6 +275,9 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
             mids = await loop.run_in_executor(None, feed.snapshot_mids)   # the price right now
             save_snapshot(str(entity.id), msg.id, seen, mids)
         status = _save(entity.id, msg)
+        read = await _read_image(entity.id, msg)
+        if read:
+            print(f"    image text: {read[:80]!r}")
         delay = (seen - _utc(msg.date)).total_seconds()
         print(f"[{stamp} UTC, seen after {delay:.0f}s] {status}: " + " | ".join(s.summary() for s in signals))
 

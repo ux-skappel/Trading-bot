@@ -179,3 +179,18 @@ def test_his_chatter_is_not_traded(text):
 def test_sell_then_new_trade_in_one_post():
     sigs = parse_signals("SOLGT TESLA 🤑 og LONGER NVIDIA nå 🔼")
     assert [(s.action, s.symbol) for s in sigs] == [("close", "TSLA"), ("open", "NVDA")]
+
+
+from trading_bot.copytrade.parser import image_symbols
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Liquid\nGOOGL-USD\nLong 20x", ["GOOGL"]),
+    ("xyz:SPCX Long", ["SPCX"]),
+    ("Alphabet Inc · Long · ROE +12%", ["GOOGL"]),
+    ("SpaceX 10x short", ["SPCX"]),
+    ("BTC/USDC Short 40x  hype", ["BTC", "HYPE"]),
+    ("Nothing relevant here 123", []),
+])
+def test_image_symbols(text, expected):
+    assert image_symbols(text, {"GOOGL", "SPCX", "BTC", "HYPE", "TSLA"}) == expected

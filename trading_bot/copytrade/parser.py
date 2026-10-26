@@ -363,6 +363,24 @@ def _open_details(sig: Signal, raw: str, lower: str) -> Signal:
     return sig
 
 
+def image_symbols(text: str, candidates) -> List[str]:
+    """Which of ``candidates`` (e.g. open positions) an image's text names.
+
+    Accepts tickers in any case and with exchange decorations (GOOGL-USD,
+    xyz:GOOGL, BTC/USDC) as well as company names (Alphabet, SpaceX).
+    """
+    wanted = {c.upper() for c in candidates}
+    found: List[str] = []
+    for raw in re.findall(r"[A-Za-zÆØÅæøå&][\w&:\-/]{0,24}", text or ""):
+        token = re.sub(r"(?i)^xyz:", "", raw)
+        token = re.split(r"[-/]", token)[0]
+        up = token.upper()
+        symbol = NAMES.get(up, up)
+        if symbol in wanted and symbol not in found:
+            found.append(symbol)
+    return found
+
+
 def parse_signals(text: str) -> List[Signal]:
     """All instructions in one post (e.g. two trades, or a close plus a new trade)."""
     if not text or not text.strip():

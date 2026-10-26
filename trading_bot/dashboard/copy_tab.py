@@ -159,7 +159,8 @@ def render(settings) -> None:
     st.markdown("#### His posts and what the bot did")
     only_trades = st.toggle("Only trade instructions", value=True)
     rows = [{
-        "time": o.post.time, "post": o.post.text[:160] or "🖼 (image)",
+        "time": o.post.time,
+        "post": (o.post.text[:160] or "🖼") + (f"  🖼 [{o.post.image_text[:70]}]" if o.post.image_text else ""),
         "understood as": o.signal.summary(), "what happened": o.outcome,
     } for o in result.posts if not only_trades or o.signal.action != "info"]
     st.dataframe(pd.DataFrame(rows), column_config={

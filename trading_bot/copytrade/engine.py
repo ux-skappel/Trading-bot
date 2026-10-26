@@ -33,12 +33,12 @@ Paper only: nothing here can place a real order.
 from __future__ import annotations
 
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..analysis.support_resistance import Bar
-from .parser import Signal, parse_signals
+from .parser import Signal, image_symbols, parse_signals
 
 
 @dataclass
@@ -75,6 +75,7 @@ class Post:
     text: str
     reply_to: Optional[int] = None
     received_at: Optional[datetime] = None     # when the bot saw it
+    image_text: Optional[str] = None           # text read from an attached image
 
 
 @dataclass
@@ -392,6 +393,12 @@ class CopyEngine:
         matches = [t for t in self.trades if t.status in statuses]
         if sig.symbol:
             return [t for t in matches if t.symbol == sig.symbol], sig.symbol
+        if post.image_text:
+            named = image_symbols(post.image_text, {t.symbol for t in matches})
+            if len(named) == 1:
+                return [t for t in matches if t.symbol == named[0]], "image"
+            if len(named) > 1:
+                return [], "image: " + ", ".join(named)
         return matches[-1:], "latest"
 
     def act_time(self, post: Post) -> datetime:
@@ -406,15 +413,16 @@ class CopyEngine:
             self._advance(trade, at)
         late = (at - post.time).total_seconds() / 60
         if not post.text.strip():
+            seen = f": {post.image_text[:80]!r}" if post.image_text else " (content couldn't be read)"
             self.outcomes.append(PostOutcome(post, parse_signals("")[0],
-                                             "image: kept so replies to it can be followed (content can't be read)"))
+                                             f"image, kept so replies to it can be followed{seen}"))
             return
         for sig in parse_signals(post.text):
             if sig.action == "open" and late > self.cfg.max_open_delay_minutes:
                 outcome = (f"missed: seen {late:.1f} min after he posted (limit "
                            f"{self.cfg.max_open_delay_minutes:g} min), not bought")
             else:
-                outcome = self._apply(Post(post.message_id, at, post.text, post.reply_to), sig)
+                outcome = self._apply(replace(post, time=at), sig)
             self.outcomes.append(PostOutcome(post, sig, outcome))
 
     def _apply(self, post: Post, sig: Signal) -> str:
@@ -448,11 +456,17 @@ class CopyEngine:
             elif sig.action == "move_sl":
                 t.stop = t.entry_price if sig.stop_to_entry else sig.new_stop
                 done.append(f"stop on #{t.number} now {t.stop:g}")
-        suffix = " (no coin named: latest position)" if how == "latest" else ""
+        suffix = {"latest": " (no coin named: latest position)",
+                  "image": " (coin read from his image)"}.get(how, "")
         return "; ".join(done) + suffix if done else "no price data"
 
     def _ignored(self, post: Post, sig: Signal) -> str:
         """Say exactly why a sell/stop update had nothing to act on."""
+        if post.image_text and not sig.symbol and self._linked_trades(post) is None:
+            open_now = {t.symbol for t in self.trades if t.status == "open"}
+            named = image_symbols(post.image_text, open_now)
+            if len(named) > 1:
+                return f"ignored: his image names several open positions ({', '.join(named)}), not guessing"
         def describe(t: CopyTrade) -> str:
             why = t.fills[-1].reason if t.fills else t.note or t.status
             return f"#{t.number} {t.symbol} ({t.status}: {why})"

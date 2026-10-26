@@ -258,6 +258,19 @@ def cmd_copy(args: argparse.Namespace) -> int:
             print(post.text.strip() or "(image)")
             print(f">>> {sig.summary() if post.text.strip() else 'image: content cannot be read'}")
         return 0
+    if args.copy_cmd == "images":
+        from .copytrade.store import load_posts
+        with_images = [p for p in load_posts() if p.image_text is not None][-args.limit:]
+        if not with_images:
+            print("No image text yet. On a Mac, run `copy backfill --days 90` after updating; "
+                  "images are read with the Mac's built-in text recognition.")
+            return 1
+        for post in with_images:
+            print(f"\n--- {post.time:%Y-%m-%d %H:%M} UTC · message {post.message_id}"
+                  f"{' · reply to ' + str(post.reply_to) if post.reply_to else ''}")
+            print(f"caption: {post.text.strip() or '(none)'}")
+            print("image text: " + (post.image_text.replace(chr(10), ' | ')[:300] or "(nothing readable)"))
+        return 0
     if args.copy_cmd == "parse":
         sig = parse_signal(" ".join(args.text))
         print(sig.summary())
@@ -369,6 +382,8 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("file")
     im.add_argument("--author", help="his name or id as shown in the export")
     im.add_argument("--channel", action="store_true", help="every post in the export is his")
+    ig = csub.add_parser("images", help="text the bot read from his images")
+    ig.add_argument("--limit", type=int, default=10)
     po = csub.add_parser("posts", help="print his stored posts and how each is understood")
     po.add_argument("--limit", type=int, default=40)
     pa = csub.add_parser("parse", help="show how a post would be understood")

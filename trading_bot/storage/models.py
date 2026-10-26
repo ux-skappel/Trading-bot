@@ -212,3 +212,15 @@ class CopyQuote(Base):
     message_id: Mapped[int] = mapped_column(Integer, index=True)
     at: Mapped[datetime] = mapped_column(DateTime)              # UTC
     mids_json: Mapped[str] = mapped_column(Text)                # {"BTC": 80123.0, "xyz:GOOGL": 321.4, ...}
+
+
+class CopyImageText(Base):
+    """Text read (on the Mac, offline) from an image the trader posted."""
+
+    __tablename__ = "copy_image_texts"
+    __table_args__ = (UniqueConstraint("chat_id", "message_id", name="uq_copy_image_text"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String(64), index=True)
+    message_id: Mapped[int] = mapped_column(Integer, index=True)
+    text: Mapped[str] = mapped_column(Text)

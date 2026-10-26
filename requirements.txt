@@ -13,3 +13,4 @@ pytest>=8.0
 rich>=13.7
 APScheduler>=3.10
 telethon>=1.36
+ocrmac>=1.0; sys_platform == "darwin"

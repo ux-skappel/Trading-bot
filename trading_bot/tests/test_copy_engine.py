@@ -243,3 +243,31 @@ def test_trade_without_free_margin_is_reported_as_not_bought():
     r = replay(posts, source(data), FREE)
     assert r.trades[1].status == "skipped"
     assert "not bought" in r.posts[1].outcome
+
+
+def _two_open(image_text):
+    data = {**minutes([300, 300, 301, 302, 303, 304], symbol="GOOGL"),
+            **minutes([70, 70, 69, 68, 67, 66], symbol="HYPE")}
+    posts = [post(0, "GOOGLE LONG 🔼 Bruker 20X giring", mid=100),
+             post(0, "HYPE SHORT 🔽 Bruker 10X giring", mid=101),
+             Post(102, T0 + timedelta(minutes=3, seconds=30), "BOOM 🔼🔼 SELGER HELE NÅ", image_text=image_text)]
+    return replay(posts, source(data), FREE)
+
+
+def test_sell_with_image_closes_the_coin_named_in_the_image():
+    r = _two_open("Liquid\nGOOGL-USD\nLong 20x\nEntry 300.00\nROE +40.1%")
+    googl, hype = r.trades
+    assert googl.status == "closed" and hype.status == "open"
+    assert "coin read from his image" in r.posts[-1].outcome
+
+
+def test_sell_with_image_naming_several_positions_does_not_guess():
+    r = _two_open("Portfolio\nGOOGL +40%\nHYPE +12%")
+    assert all(t.status == "open" for t in r.trades)
+    assert "not guessing" in r.posts[-1].outcome
+
+
+def test_sell_without_image_text_falls_back_to_latest_position():
+    r = _two_open(None)
+    googl, hype = r.trades
+    assert hype.status == "closed" and googl.status == "open"

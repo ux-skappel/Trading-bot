@@ -9,7 +9,7 @@ from typing import Iterable, List, Optional
 from sqlalchemy import select
 
 from ..storage.database import init_db, session_scope
-from ..storage.models import CopyMessage, CopyQuote, CopyState
+from ..storage.models import CopyImageText, CopyMessage, CopyQuote, CopyState
 from .engine import Post
 
 
@@ -45,7 +45,27 @@ def load_posts(chat_id: Optional[str] = None) -> List[Post]:
         query = select(CopyMessage).order_by(CopyMessage.timestamp, CopyMessage.message_id)
         if chat_id:
             query = query.where(CopyMessage.chat_id == str(chat_id))
-        return [Post(r.message_id, r.timestamp, r.text, r.reply_to, r.fetched_at) for r in db.scalars(query)]
+        images = {(t.chat_id, t.message_id): t.text for t in db.scalars(select(CopyImageText))}
+        return [Post(r.message_id, r.timestamp, r.text, r.reply_to, r.fetched_at,
+                     images.get((r.chat_id, r.message_id)))
+                for r in db.scalars(query)]
+
+
+def save_image_text(chat_id: str, message_id: int, text: str) -> None:
+    """Remember the text read from one of his images."""
+    with session_scope() as db:
+        row = db.scalars(select(CopyImageText).where(
+            CopyImageText.chat_id == str(chat_id), CopyImageText.message_id == message_id)).first()
+        if row is None:
+            db.add(CopyImageText(chat_id=str(chat_id), message_id=message_id, text=text))
+        else:
+            row.text = text
+
+
+def has_image_text(chat_id: str, message_id: int) -> bool:
+    with session_scope() as db:
+        return db.scalars(select(CopyImageText).where(
+            CopyImageText.chat_id == str(chat_id), CopyImageText.message_id == message_id)).first() is not None
 
 
 def save_snapshot(chat_id: str, message_id: int, at: datetime, mids: dict) -> None:

@@ -215,6 +215,14 @@ he posted is skipped. Sells and stop moves on positions you hold still happen
 when seen. `copy report` shows the live account; `copy report --history` (or
 the toggle in the tab) replays all stored posts as a clearly labelled test.
 
+**Images.** When he sells with a picture of the trade and a caption like
+"SELGER HELE NÅ", the bot reads the text in the picture with the Mac's
+built-in text recognition (offline, free, no API key) to see which of your
+open positions he means. A picture can only pick which open position to act
+on, never open a new trade; if it names several open positions the bot
+doesn't guess. Replies to images are followed back to the original trade
+post. `copy images` shows what was read.
+
 Rules when his post leaves something open: enter at once if the price is
 within 1% of his entry, otherwise wait at his entry for 24 h; size by his risk
 % (with his stop), else his size %, else 10% of the account as margin; split
