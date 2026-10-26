@@ -234,8 +234,9 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
                 mark_sell_only(str(entity.id), msg.id)
             if await _read_image(entity.id, msg):
                 images_read += 1
-                if images_read % 25 == 0:
-                    print(f"  ...read {images_read} images so far", flush=True)
+                if images_read % 25 == 0:   # it reads newest first, back to `since`
+                    print(f"  ...read {images_read} images so far, now at {_utc(msg.date):%Y-%m-%d} "
+                          f"(stops at {since:%Y-%m-%d})", flush=True)
         where = f" in topic {topic_id}" if topic_id is not None else ""
         if sell_only:
             where += " (sells only)"
