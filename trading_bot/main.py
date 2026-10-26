@@ -151,14 +151,21 @@ def cmd_strategy(args: argparse.Namespace) -> int:
     if not 1 <= args.leverage <= 50:
         print("--leverage must be between 1 and 50 (Liquid allows up to 40x on crypto)")
         return 2
+    if args.risk is not None and not 0 < args.risk <= 20:
+        print("--risk is a percent of the account, between 0 and 20 (e.g. 1)")
+        return 2
     params = BounceParams.from_settings(
         s, min_touches=args.min_touches, min_reward_risk=args.min_rr,
-        leverage=args.leverage, max_hold_days=args.max_days,
+        leverage=args.leverage, max_hold_days=args.max_days, trailing=args.trailing,
+        risk_per_trade=args.risk / 100 if args.risk else None,
     )
     hold = f"max {params.max_hold_days} days" if params.max_hold_days else "no time limit"
+    size = (f"risk {args.risk:g}% per trade (max {params.leverage:g}x)" if params.risk_per_trade
+            else f"{params.leverage:g}x leverage")
+    trail = "trailing stop" if params.trailing else "fixed stop"
     print(
         f"\nSupport-bounce backtest · daily candles · min {params.min_touches} touches · "
-        f"min reward/risk {params.min_reward_risk} · {params.leverage:g}x leverage · {hold}\n"
+        f"min reward/risk {params.min_reward_risk} · {size} · {trail} · {hold}\n"
         f"Costs like Liquid perps: fee {params.fee_pct:.3%} per side, funding "
         f"{params.funding_pct_per_day:.2%}/day, liquidation at {params.maintenance_margin:.2%} "
         f"maintenance margin\n"
@@ -184,8 +191,8 @@ def cmd_strategy(args: argparse.Namespace) -> int:
         if args.trades:
             for t in r.trades:
                 print(f"    {t.entry_time:%Y-%m-%d} buy {t.entry_price:.4g} (support {t.support:.4g}, "
-                      f"{t.support_touches}x) -> {t.exit_time:%Y-%m-%d} {t.exit_reason} "
-                      f"{t.exit_price:.4g}  {t.return_pct:+.1%}  ({t.days_held}d)")
+                      f"{t.support_touches}x, size {t.position_size:.2f}x) -> {t.exit_time:%Y-%m-%d} "
+                      f"{t.exit_reason} {t.exit_price:.4g}  {t.return_pct:+.1%}  ({t.days_held}d)")
 
     total = summarize(results)
     if total["trades"]:
@@ -239,7 +246,12 @@ def build_parser() -> argparse.ArgumentParser:
     strat.add_argument("--csv", help="OHLC or close-only CSV file")
     strat.add_argument("--min-touches", type=int, default=2)
     strat.add_argument("--min-rr", type=float, default=1.5, help="minimum reward/risk")
-    strat.add_argument("--leverage", type=float, default=1.0, help="1 = none, max 50 (backtest only)")
+    strat.add_argument("--leverage", type=float, default=1.0,
+                       help="fixed leverage, or the cap with --risk; max 50 (backtest only)")
+    strat.add_argument("--risk", type=float, default=None,
+                       help="percent of the account lost if the stop is hit, e.g. 1")
+    strat.add_argument("--trailing", action="store_true",
+                       help="move the stop to break-even at +1R, then trail 1 ATR below the high")
     strat.add_argument("--max-days", type=int, default=None, help="sell at the close after N days")
     strat.add_argument("--trades", action="store_true", help="list every trade")
     strat.set_defaults(func=cmd_strategy)

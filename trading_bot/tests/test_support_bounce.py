@@ -114,6 +114,36 @@ def test_gap_through_liquidation_wipes_out_and_stops_trading():
     assert summarize([r])["wiped_out"] == 1
 
 
+def test_risk_per_trade_caps_the_loss_at_the_stop():
+    closes = CYCLE * 3 + [100, 102, 101, 97, 94, 92, 90]
+    r = backtest_support_bounce(_candles(closes), "X", replace(P, risk_per_trade=0.01, leverage=40))
+    t = r.trades[0]
+    assert t.exit_reason == "stop"
+    assert math.isclose(t.return_pct, -0.01)
+    assert math.isclose(t.position_size, 0.01 / ((t.entry_price - t.stop) / t.entry_price))
+
+
+def test_risk_sizing_never_exceeds_the_leverage_cap():
+    bars = _candles(CYCLE * 5)
+    trades = backtest_support_bounce(bars, "X", replace(P, risk_per_trade=0.5, leverage=3)).trades
+    assert trades and all(t.position_size == 3 for t in trades)
+
+
+TURNS_BACK = CYCLE * 3 + [100, 102, 104, 106, 101, 98, 96]   # bounce, then falls again
+
+
+def test_without_trailing_a_bounce_that_turns_back_hits_the_stop():
+    t = backtest_support_bounce(_candles(TURNS_BACK), "X", P).trades[0]
+    assert t.exit_reason == "stop" and t.return_pct < 0
+
+
+def test_trailing_stop_sells_before_it_falls_again():
+    t = backtest_support_bounce(_candles(TURNS_BACK), "X", replace(P, trailing=True)).trades[0]
+    assert t.exit_reason == "trail"
+    assert t.return_pct > 0
+    assert t.exit_price > t.entry_price
+
+
 def test_too_little_data_gives_empty_result():
     r = backtest_support_bounce(_candles(CYCLE), "SHORT", P)
     assert r.trades == [] and r.total_return == 0.0 and r.win_rate is None

@@ -67,14 +67,14 @@ def _levels_for_symbol(symbol: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _bounce_for_symbol(symbol: str, period: str, min_touches: int, min_rr: float,
-                       leverage: int, max_days):
+                       leverage: int, max_days, risk, trailing: bool):
     """Backtest the support-bounce strategy for one symbol (cached 1 hour)."""
     history = MarketDataProvider(settings.market_data_provider).get_history(
         symbol, infer_asset_class(symbol), period=period
     )
     params = BounceParams.from_settings(
         settings, min_touches=min_touches, min_reward_risk=min_rr,
-        leverage=leverage, max_hold_days=max_days,
+        leverage=leverage, max_hold_days=max_days, risk_per_trade=risk, trailing=trailing,
     )
     return history.bars, backtest_support_bounce(history.bars, symbol, params), history.source
 
@@ -148,12 +148,28 @@ with tab_strategy:
     )
     market_keys = {"US stocks": "us", "Oslo Børs": "oslo", "Europe": "europe", "Crypto": "crypto"}
     hold_options = {"No limit": None, "1 day": 1, "2 days": 2, "3 days": 3, "5 days": 5, "10 days": 10}
-    c_mkt, c_per, c_lev, c_hold, c_tch, c_rr = st.columns([3, 1, 1, 1, 1, 1])
+    risk_options = {"Off (fixed leverage)": None, "0.5%": 0.005, "1%": 0.01, "2%": 0.02, "5%": 0.05}
+    c_mkt, c_per, c_hold, c_trail = st.columns([3, 1, 1, 1])
     markets = c_mkt.multiselect("Markets", list(market_keys), default=["US stocks", "Crypto"])
     period = c_per.selectbox("History", ["1y", "2y", "5y", "10y"], index=2)
-    leverage = c_lev.selectbox("Leverage", [1, 2, 3, 5, 10, 20, 40], format_func=lambda x: f"{x}x",
-                               help="Liquid allows up to 40x on crypto")
     hold_label = c_hold.selectbox("Max days in trade", list(hold_options), index=3)
+    trailing = c_trail.toggle(
+        "Trailing stop", value=True,
+        help="Once price has risen as much as you risked, the stop moves to break-even and then "
+             "follows 1 ATR (a normal day's range) below the highest price, so a bounce that "
+             "turns back is sold before it falls again.",
+    )
+    c_risk, c_lev, c_tch, c_rr = st.columns(4)
+    risk_label = c_risk.selectbox(
+        "Risk per trade", list(risk_options), index=2,
+        help="How much of the account a trade loses if the stop is hit. The position is sized "
+             "to match, so a tight stop uses more leverage and a wide stop less.",
+    )
+    leverage = c_lev.selectbox(
+        "Max leverage" if risk_options[risk_label] else "Leverage",
+        [1, 2, 3, 5, 10, 20, 40], index=3, format_func=lambda x: f"{x}x",
+        help="Liquid allows up to 40x on crypto. With risk per trade on, this is the cap.",
+    )
     min_touches = int(c_tch.number_input("Min touches", min_value=1, max_value=5, value=2))
     min_rr = float(c_rr.number_input("Min reward/risk", min_value=1.0, max_value=5.0,
                                      value=float(settings.min_reward_risk), step=0.25))
@@ -161,17 +177,19 @@ with tab_strategy:
         st.session_state["bounce_request"] = (
             tuple(settings.symbols_for([market_keys[m] for m in markets])),
             period, min_touches, min_rr, leverage, hold_options[hold_label],
+            risk_options[risk_label], trailing,
         )
 
     request = st.session_state.get("bounce_request")
     if request is None:
         st.info("Pick markets and press **Run backtest**.")
     else:
-        symbols, req_period, req_touches, req_rr, req_lev, req_days = request
+        symbols, req_period, req_touches, req_rr, req_lev, req_days, req_risk, req_trail = request
         runs = {}
         progress = st.progress(0.0, text="Backtesting...")
         for i, sym in enumerate(symbols, start=1):
-            runs[sym] = _bounce_for_symbol(sym, req_period, req_touches, req_rr, req_lev, req_days)
+            runs[sym] = _bounce_for_symbol(sym, req_period, req_touches, req_rr, req_lev,
+                                           req_days, req_risk, req_trail)
             progress.progress(i / len(symbols), text=f"Backtesting {sym}...")
         progress.empty()
 
@@ -179,20 +197,25 @@ with tab_strategy:
         offline = [sym for sym, (_, _, src) in runs.items() if src != "yfinance"]
         if offline:
             st.warning(f"No live price data for {', '.join(offline)} — those use offline demo data.")
+        sizing = (f"risk {req_risk:.1%} per trade, max {req_lev}x" if req_risk
+                  else f"{req_lev}x leverage")
         st.caption(
-            f"{len(symbols)} symbols · {req_period} of daily candles · {req_lev}x leverage · "
+            f"{len(symbols)} symbols · {req_period} of daily candles · {sizing} · "
+            f"{'trailing stop' if req_trail else 'fixed stop'} · "
             f"{'max ' + str(req_days) + ' days in trade' if req_days else 'no time limit'} · "
             f"min {req_touches} touches · min reward/risk {req_rr}"
         )
 
         total = summarize(results)
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m4b = st.columns(5)
         m1.metric("Trades", total["trades"])
         m2.metric("Win rate", "-" if total["win_rate"] is None else f"{total['win_rate']:.0%}")
         m3.metric("Avg per trade", "-" if total["avg_return"] is None else f"{total['avg_return']:+.2%}",
                   help="Return on your own money, after leverage, fees and funding")
-        m4.metric("Profit factor", "-" if total["profit_factor"] is None else f"{total['profit_factor']:.2f}",
-                  help="Total gains divided by total losses. Below 1 loses money over time.")
+        m4.metric("Worst trade", "-" if total["worst_trade"] is None else f"{total['worst_trade']:+.1%}",
+                  help="Can be worse than the risk per trade when price gaps past the stop")
+        m4b.metric("Profit factor", "-" if total["profit_factor"] is None else f"{total['profit_factor']:.2f}",
+                   help="Total gains divided by total losses. Below 1 loses money over time.")
         m5, m6, m7, m8 = st.columns(4)
         m5.metric("Beat buy & hold", f"{total['beat_buy_hold']} of {total['symbols']}")
         m6.metric("Avg days held", "-" if total["avg_days_held"] is None else f"{total['avg_days_held']:.1f}")
@@ -243,6 +266,8 @@ with tab_strategy:
                 "exit_price": "sell price",
                 "exit_reason": "exit",
                 "days": "days held",
+                "size": st.column_config.NumberColumn(
+                    "size", format="%.2fx", help="Position as a multiple of the account"),
                 "outcome": None,
             },
             hide_index=True,

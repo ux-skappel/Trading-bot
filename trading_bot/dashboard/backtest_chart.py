@@ -16,7 +16,7 @@ SURFACE = {"light": "#ffffff", "dark": "#0e1117"}
 
 TRADE_COLUMNS = [
     "entry_time", "entry_price", "exit_time", "exit_price", "return_pct",
-    "exit_reason", "days", "support", "stop", "target", "outcome",
+    "exit_reason", "days", "size", "support", "stop", "target", "outcome",
 ]
 
 
@@ -30,6 +30,7 @@ def trades_frame(result: BounceResult) -> pd.DataFrame:
             "return_pct": round(t.return_pct * 100, 2),
             "exit_reason": t.exit_reason,
             "days": t.days_held,
+            "size": round(t.position_size, 2),
             "support": round(t.support, 6),
             "stop": round(t.stop, 6),
             "target": round(t.target, 6),
