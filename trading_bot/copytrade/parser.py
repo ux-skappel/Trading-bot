@@ -284,6 +284,20 @@ CLOSE_WORDS = re.compile(
     r"tok\s+profitt|tar\s+profitt|tatt\s+profitt|ute\s+av|out\s+of|"
     r"take\s+(?:some\s+)?profits?\s+(?:now|here)|ta\s+(?:litt\s+)?gevinst|secur\w+\s+profits?)\b",
     re.IGNORECASE)
+# "Om vi closer under boksen så selger jeg" / "selger når vi treffer $120": a plan, not a sell now.
+IF_BEFORE = re.compile(r"\b(?:om|hvis|dersom|if|unless)\b", re.IGNORECASE)
+IF_AFTER = re.compile(r"[^.!?\n…]{0,25}?\b(?:når|om|hvis|dersom|if|when|once)\s+"
+                      r"(?:vi|den|prisen|kursen|it|price|we|\$?\d)", re.IGNORECASE)
+# "For øyeblikket long HOOD" / "fortsatt long": a position he already has, not a new call.
+STATUS = re.compile(r"\b(?:for\s+øyeblikket|per\s+nå|fortsatt|fremdeles|still|currently|sitter)\s+(?:\w+\s+){0,2}?"
+                    r"(?:long|short)\b")
+
+
+def _conditional(raw: str, close: re.Match) -> bool:
+    start = max(raw.rfind(c, 0, close.start()) for c in ".!?:;\n…") + 1
+    return bool(IF_BEFORE.search(raw[start:close.start()]) or IF_AFTER.match(raw, close.end()))
+
+
 STOP_LEVEL = (r"(?:\bsl\b|stop[\s-]?loss|\bstop(?:p)?(?:[\s-]?loss)?\b|invalidation)\s*[:=@\-]?\s*"
               r"(?:at|på|ved|under|below|over|above|rundt)?\s*\$?(" + NUM + r")(k)?")
 
@@ -340,6 +354,9 @@ def _close_signal(raw: str, lower: str, close: re.Match) -> Signal:
         symbol = normalize_symbol(token)
         if symbol:
             break
+    if symbol is None:   # "Nydelig long på AMD 🔼 Selger hele nå"
+        named = re.search(r"\b(?:long|short)\w*\s+(?:på|on|i|in)\s+([$#]?[\w&.]+)", raw, re.IGNORECASE)
+        symbol = normalize_symbol(named.group(1)) if named else None
     if symbol is None:
         symbol = _known_symbol(raw)
     sig = Signal("close", symbol=symbol)
@@ -427,6 +444,20 @@ def image_symbols(text: str, candidates) -> List[str]:
     return found
 
 
+TICKER_IN_IMAGE = re.compile(
+    r"\b([A-Z][A-Z0-9&]{1,9})(?=[-/]USD[CT]?\b|\s*\|?\s*(?:PERP|LONG|SHORT|Long|Short)\b|\s+\d{1,3}x\b)")
+
+
+def image_tickers(text: str) -> List[str]:
+    """Every ticker a trade card names (AMD-USD, xyz:AMD, 'AMD PERP 10x LONG'), held or not."""
+    found: List[str] = []
+    for token in TICKER_IN_IMAGE.findall(re.sub(r"(?i)\bxyz:", "", text or "")):
+        symbol = NAMES.get(token, token)
+        if symbol not in NOT_SYMBOLS and symbol not in found:
+            found.append(symbol)
+    return found
+
+
 def parse_signals(text: str) -> List[Signal]:
     """All instructions in one post (e.g. two trades, or a close plus a new trade)."""
     if not text or not text.strip():
@@ -442,13 +473,21 @@ def parse_signals(text: str) -> List[Signal]:
         return [Signal("cancel", symbol=_symbol(raw), notes=["cancel pending entry"])]
 
     head_side, head_symbols = _headline(raw)
-    close = CLOSE_WORDS.search(raw)
+    closes = list(CLOSE_WORDS.finditer(raw))
+    plans = [m for m in closes if _conditional(raw, m)]
+    close = next((m for m in closes if m not in plans), None)
+    notes = [f"'{m.group(0)}' is a plan ('if … I sell'), not a sell now" for m in plans[:1]]
     out: List[Signal] = []
     # A close word before the headline ("SOLGT TESLA, LONGER NVIDIA") is its own instruction;
     # one after it is part of the trade's text.
     if close and (not head_symbols or close.start() < _headline_start(raw)):
         out.append(_close_signal(raw, lower, close))
 
+    if head_symbols and STATUS.search(lower):   # "For øyeblikket long HOOD" = already in it
+        if close and not out:                   # "..., men SOLGT NVIDIA"
+            out.append(_close_signal(raw, lower, close))
+        return out + [Signal("info", symbol=head_symbols[0], side=head_side, notes=[
+            f"status update: he is already {head_side} {', '.join(head_symbols)}, not a new buy"] + notes)]
     if head_symbols:
         for sym in head_symbols:
             sig = _open_details(Signal("open", symbol=sym, side=head_side), raw, lower)
@@ -462,6 +501,8 @@ def parse_signals(text: str) -> List[Signal]:
         return out
     if out:
         return out
+    if plans:
+        return [Signal("info", symbol=_known_symbol(raw), notes=notes)]
 
     move = re.search(
         r"\b(?:move|moving|flytt\w*|set|sett|juster\w*|trail)\s+(?:the\s+|my\s+)?(?:sl|stop(?:p)?(?:[\s-]?loss)?)\b"

@@ -38,7 +38,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..analysis.support_resistance import Bar
-from .parser import Signal, image_symbols, parse_signals
+from .parser import Signal, image_symbols, image_tickers, parse_signals
 
 
 @dataclass
@@ -419,6 +419,7 @@ class CopyEngine:
                 return [t for t in matches if t.symbol == named[0]], "image"
             if len(named) > 1:
                 return [], "image: " + ", ".join(named)
+            return [], "image names no open position"   # never guess against his picture
         if post.sell_only:
             return [], "unclear"        # never guess from a discussion topic
         return matches[-1:], "latest"
@@ -506,6 +507,10 @@ class CopyEngine:
             named = image_symbols(post.image_text, open_now)
             if len(named) > 1:
                 return f"ignored: his image names several open positions ({', '.join(named)}), not guessing"
+            if not named:
+                elsewhere = image_tickers(post.image_text)
+                return (f"ignored: his image says {', '.join(elsewhere)}, which the bot doesn't hold, not guessing"
+                        if elsewhere else "ignored: his image names none of the open positions, not guessing")
         def describe(t: CopyTrade) -> str:
             why = t.fills[-1].reason if t.fills else t.note or t.status
             return f"#{t.number} {t.symbol} ({t.status}: {why})"

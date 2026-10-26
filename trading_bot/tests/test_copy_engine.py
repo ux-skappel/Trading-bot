@@ -294,6 +294,22 @@ def test_sell_with_image_naming_several_positions_does_not_guess():
     assert "not guessing" in r.posts[-1].outcome
 
 
+def test_sell_whose_image_names_a_coin_we_dont_hold_closes_nothing():
+    r = _two_open("Liquid\nAMD-USD\nLong 10x\nROE +31%")
+    assert all(t.status == "open" for t in r.trades)
+    assert "image says AMD, which the bot doesn't hold" in r.posts[-1].outcome
+
+
+def test_sell_naming_a_coin_we_dont_hold_does_not_close_the_latest():
+    data = minutes([90, 90, 91, 92, 93], symbol="HOOD")
+    posts = [post(0, "HOOD LONG 🔼 Bruker 10X giring", mid=140),
+             Post(141, T0 + timedelta(minutes=3), "Fin long på AMD 🔼 Selger hele nå",
+                  image_text="Liquid | AMD PERP 10x LONG")]
+    r = replay(posts, source(data), FREE)
+    assert r.trades[0].status == "open"
+    assert "no AMD position was ever copied" in r.posts[-1].outcome
+
+
 def test_sell_without_image_text_falls_back_to_latest_position():
     r = _two_open(None)
     googl, hype = r.trades

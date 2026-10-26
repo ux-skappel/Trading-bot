@@ -184,6 +184,41 @@ def test_real_calls_with_a_laugh_are_still_bought(text):
     assert all(s.action == "open" for s in parse_signals(text))
 
 
+def test_sell_names_the_coin_he_was_long_on():
+    s = parse_signal("Fin long på AMD 🔼 Selger hele nå (kan flytte SL i profitt)")
+    assert (s.action, s.symbol) == ("close", "AMD")
+
+
+@pytest.mark.parametrize("text", [
+    "Per nå long HOOD… Om vi lukker under boksen i kveld så selger jeg",
+    "For øyeblikket long HOOD. Hvis vi closer under støtten selger jeg",
+    "Selger når vi treffer $120",
+])
+def test_status_and_plans_are_not_trades(text):
+    assert [s.action for s in parse_signals(text)] == ["info"]
+
+
+@pytest.mark.parametrize("text", ["For øyeblikket long HOOD", "Fortsatt long TESLA 🔼", "Sitter fortsatt short BTC"])
+def test_status_update_is_not_a_buy(text):
+    assert [s.action for s in parse_signals(text)] == ["info"]
+
+
+def test_sell_after_a_status_line_still_counts():
+    sigs = parse_signals("Fortsatt long TESLA, men SOLGT NVIDIA")
+    assert [(s.action, s.symbol) for s in sigs] == [("close", "NVDA"), ("info", "TSLA")]
+
+
+def test_a_plain_sell_is_not_a_plan():
+    for text in ("Hvis dere ikke har solgt ennå: selger hele nå", "Som ventet selger jeg hele nå"):
+        assert parse_signal(text).action == "close"
+
+
+def test_image_tickers_reads_any_trade_card():
+    from trading_bot.copytrade.parser import image_tickers
+    assert image_tickers("• Liquid\nAMD-USD\nLong 10x\nROE +31%") == ["AMD"]
+    assert image_tickers("Liquid | xyz:AMD PERP 10x LONG | CURRENT RETURN") == ["AMD"]
+
+
 def test_risk_percent_is_not_risky():
     s = parse_signal("LONG $SOL entry 100 SL 95 TP1 110 risk 1% god risk/reward")
     assert s.risk_pct == pytest.approx(0.01) and s.confidence == "strong"
