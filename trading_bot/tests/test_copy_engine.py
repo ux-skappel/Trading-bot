@@ -271,3 +271,17 @@ def test_sell_without_image_text_falls_back_to_latest_position():
     r = _two_open(None)
     googl, hype = r.trades
     assert hype.status == "closed" and googl.status == "open"
+
+
+def test_reply_sell_shows_what_his_image_says():
+    data = {**minutes([200, 200, 205, 210, 215], symbol="NVDA"), **minutes([370] * 5, symbol="TSLA")}
+    posts = [post(0, "NVIDIA LONG 🔼 Bruker 10X giring", mid=110),
+             post(0, "TESLA LONG 🔼 Bruker 10X giring", mid=111),
+             Post(112, T0 + timedelta(minutes=3, seconds=30), "SELGER HELE NÅ", reply_to=110,
+                  image_text="Liquid | NVDA PERP 10x LONG | CURRENT RETURN | +22.61%"),
+             Post(113, T0 + timedelta(minutes=3, seconds=40), "SELGER HELE NÅ", reply_to=111,
+                  image_text="Liquid | NVDA PERP 10x LONG")]
+    r = replay(posts, source(data), FREE)
+    nvda_sell, tsla_sell = r.posts[-2].outcome, r.posts[-1].outcome
+    assert "#1 NVDA" in nvda_sell and "he replied to it" in nvda_sell and "image says NVDA" in nvda_sell
+    assert "#2 TSLA" in tsla_sell and "⚠ his image says NVDA" in tsla_sell

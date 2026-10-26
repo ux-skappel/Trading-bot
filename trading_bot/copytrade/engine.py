@@ -452,13 +452,26 @@ class CopyEngine:
                 if price is None:
                     continue
                 self._book(t, self._time_at(t.symbol, post.time), price, t.remaining * sig.close_fraction, "his close")
-                done.append(f"closed {sig.close_fraction:.0%} of #{t.number} at {price:g}")
+                done.append(f"closed {sig.close_fraction:.0%} of #{t.number} {t.symbol} at {price:g}")
             elif sig.action == "move_sl":
                 t.stop = t.entry_price if sig.stop_to_entry else sig.new_stop
-                done.append(f"stop on #{t.number} now {t.stop:g}")
+                done.append(f"stop on #{t.number} {t.symbol} now {t.stop:g}")
         suffix = {"latest": " (no coin named: latest position)",
-                  "image": " (coin read from his image)"}.get(how, "")
-        return "; ".join(done) + suffix if done else "no price data"
+                  "image": " (coin read from his image)",
+                  "reply": " (he replied to it)"}.get(how, "")
+        return ("; ".join(done) + suffix + self._image_check(post, trades)) if done else "no price data"
+
+    def _image_check(self, post: Post, acted_on: List[CopyTrade]) -> str:
+        """What his picture says, so it's visible that it was read (and if it disagrees)."""
+        if not post.image_text:
+            return ""
+        named = image_symbols(post.image_text, {t.symbol for t in self.trades})
+        if not named:
+            return " · image read, no copied coin in it"
+        acted = {t.symbol for t in acted_on}
+        if acted and not acted & set(named):
+            return f" · ⚠ his image says {', '.join(named)}"
+        return f" · image says {', '.join(named)}"
 
     def _ignored(self, post: Post, sig: Signal) -> str:
         """Say exactly why a sell/stop update had nothing to act on."""
