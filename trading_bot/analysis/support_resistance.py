@@ -189,6 +189,8 @@ class LevelTargets:
     take_profit: float
     reward_risk: Optional[float]
     notes: List[str] = field(default_factory=list)
+    stop_level: Optional[PriceLevel] = None     # None = percentage fallback
+    target_level: Optional[PriceLevel] = None   # None = percentage fallback
 
 
 def suggest_stop_take(
@@ -206,9 +208,11 @@ def suggest_stop_take(
     buffer = max(sr.tolerance_pct, 0.005)
 
     stop = entry * (1 - default_stop_pct)
+    stop_level: Optional[PriceLevel] = None
+    target_level: Optional[PriceLevel] = None
     usable = [s for s in sr.supports if s.price < entry and (entry - s.price * (1 - buffer)) / entry <= max_stop_pct]
     if usable:
-        s = usable[0]
+        s = stop_level = usable[0]
         stop = s.price * (1 - buffer)
         notes.append(f"Stop {stop:.4g} just below support {s.price:.4g} ({s.touches} touches).")
     else:
@@ -217,7 +221,7 @@ def suggest_stop_take(
     take = entry * (1 + default_take_pct)
     above = [r for r in sr.resistances if r.price > entry]
     if above:
-        r = above[0]
+        r = target_level = above[0]
         take = r.price * (1 - buffer)
         if take <= entry:
             take = r.price
@@ -234,6 +238,8 @@ def suggest_stop_take(
         take_profit=round(take, 4),
         reward_risk=reward_risk,
         notes=notes,
+        stop_level=stop_level,
+        target_level=target_level,
     )
 
 

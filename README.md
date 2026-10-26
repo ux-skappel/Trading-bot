@@ -36,6 +36,12 @@ crypto assets, ranks opportunities with a transparent 0–100 score, and
   `min_reward_risk` (default 1.5). Shown as a chart per symbol in the
   dashboard; you can also upload your own CSV (Nordnet-style `;` and decimal
   commas work).
+- **Strategy test: bounce off support** — backtests buying when a daily
+  candle dips into a support zone and closes green above it (stop below the
+  support, target below the nearest resistance, minimum reward/risk) over up
+  to 10 years of real prices. Uses the same level detector as the live bot
+  with only the data known on each day, and charges fees. Reports win rate,
+  return vs buy & hold, max drawdown and every trade.
 - **Paper broker** — entry / stop loss / take profit / trailing stop /
   exit reason / PnL.
 - **Risk manager** — position size cap, daily loss cap, max open positions,
@@ -81,7 +87,8 @@ trading_bot/
     streamlit_app.py
     sr_chart.py           # candlestick chart with S/R lines
   backtesting/
-    backtest.py
+    backtest.py           # news-event replay
+    support_bounce.py     # support-bounce strategy backtest
   data/
     sample_events.csv
     sample_prices.csv
@@ -136,6 +143,13 @@ README.md
    python -m trading_bot.main levels --csv my_chart.csv # your own data
    ```
    Or open the **Support/Resistance** tab in the dashboard.
+
+   **Test the support-bounce strategy** (or use the **Strategy test** tab):
+   ```bash
+   python -m trading_bot.main strategy --market us crypto       # 5 years
+   python -m trading_bot.main strategy AAPL BTC --period 10y --trades
+   python -m trading_bot.main strategy --min-touches 3 --min-rr 2
+   ```
 
 8. **Run the tests:**
    ```bash

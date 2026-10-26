@@ -209,6 +209,18 @@ class Settings:
         }
     )
 
+    def symbols_for(self, markets: List[str]) -> List[str]:
+        """Watchlist symbols for markets: us, oslo, europe, crypto or all."""
+        if "all" in markets:
+            return self.stock_watchlist + self.crypto_watchlist
+        groups = {
+            "us": [s for s in self.stock_watchlist if "." not in s],
+            "oslo": [s for s in self.stock_watchlist if s.endswith(".OL")],
+            "europe": [s for s in self.stock_watchlist if "." in s and not s.endswith(".OL")],
+            "crypto": list(self.crypto_watchlist),
+        }
+        return list(dict.fromkeys(s for m in markets for s in groups[m]))
+
     def safety_summary(self) -> Dict[str, object]:
         """Return a dict of the safety-critical flags for display."""
         return {

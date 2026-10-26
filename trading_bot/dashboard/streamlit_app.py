@@ -21,8 +21,10 @@ from sqlalchemy import select
 
 from trading_bot.analysis.support_resistance import bars_from_csv_text, detect_levels
 from trading_bot.app import TradingBotApp
+from trading_bot.backtesting.support_bounce import BounceParams, backtest_support_bounce, summarize
 from trading_bot.config import get_settings
 from trading_bot.connectors.market_data import MarketDataProvider, infer_asset_class
+from trading_bot.dashboard.backtest_chart import equity_chart, trades_chart, trades_frame
 from trading_bot.dashboard.sr_chart import levels_frame, sr_chart
 from trading_bot.storage.database import init_db, session_scope
 from trading_bot.storage.models import (
@@ -61,6 +63,16 @@ def _levels_for_symbol(symbol: str):
     sr = detect_levels(history.bars, symbol=symbol,
                        window=settings.sr_window, max_levels=settings.sr_max_levels)
     return history.bars, sr, history.source
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _bounce_for_symbol(symbol: str, period: str, min_touches: int, min_rr: float):
+    """Backtest the support-bounce strategy for one symbol (cached 1 hour)."""
+    history = MarketDataProvider(settings.market_data_provider).get_history(
+        symbol, infer_asset_class(symbol), period=period
+    )
+    params = BounceParams.from_settings(settings, min_touches=min_touches, min_reward_risk=min_rr)
+    return history.bars, backtest_support_bounce(history.bars, symbol, params), history.source
 
 
 LEVEL_TABLE_CONFIG = {
@@ -114,11 +126,110 @@ with col_msg:
     st.write(st.session_state.get("last_result", "Press 'Run scan now' to ingest fresh data."))
 
 # Tabs
-(tab_news, tab_opps, tab_levels, tab_portfolio, tab_positions, tab_perf,
+(tab_news, tab_opps, tab_levels, tab_strategy, tab_portfolio, tab_positions, tab_perf,
  tab_logs, tab_sources, tab_watch, tab_config) = st.tabs([
-    "News", "Opportunities", "Support/Resistance", "Portfolio", "Open positions",
-    "Performance", "Decisions", "Sources", "Watchlists", "Config",
+    "News", "Opportunities", "Support/Resistance", "Strategy test", "Portfolio",
+    "Open positions", "Performance", "Decisions", "Sources", "Watchlists", "Config",
 ])
+
+with tab_strategy:
+    st.subheader("Strategy test: bounce off support")
+    st.caption(
+        "Buys when a daily candle dips into a support zone, holds, and closes green above it. "
+        "Enters at the next open if reward/risk still holds; stop just below the support, "
+        "target just below the nearest resistance. Uses the same level detector as the live "
+        "bot, with only the data known on each day. Fees 0.1% per side. "
+        "Past results do not guarantee future returns."
+    )
+    market_keys = {"US stocks": "us", "Oslo Børs": "oslo", "Europe": "europe", "Crypto": "crypto"}
+    c_mkt, c_per, c_tch, c_rr = st.columns([3, 1, 1, 1])
+    markets = c_mkt.multiselect("Markets", list(market_keys), default=["US stocks", "Crypto"])
+    period = c_per.selectbox("History", ["1y", "2y", "5y", "10y"], index=2)
+    min_touches = int(c_tch.number_input("Min touches", min_value=1, max_value=5, value=2))
+    min_rr = float(c_rr.number_input("Min reward/risk", min_value=1.0, max_value=5.0,
+                                     value=float(settings.min_reward_risk), step=0.25))
+    if st.button("Run backtest", type="primary", disabled=not markets):
+        st.session_state["bounce_request"] = (
+            tuple(settings.symbols_for([market_keys[m] for m in markets])),
+            period, min_touches, min_rr,
+        )
+
+    request = st.session_state.get("bounce_request")
+    if request is None:
+        st.info("Pick markets and press **Run backtest**.")
+    else:
+        symbols, req_period, req_touches, req_rr = request
+        runs = {}
+        progress = st.progress(0.0, text="Backtesting...")
+        for i, sym in enumerate(symbols, start=1):
+            runs[sym] = _bounce_for_symbol(sym, req_period, req_touches, req_rr)
+            progress.progress(i / len(symbols), text=f"Backtesting {sym}...")
+        progress.empty()
+
+        results = [res for _, res, _ in runs.values()]
+        offline = [sym for sym, (_, _, src) in runs.items() if src != "yfinance"]
+        if offline:
+            st.warning(f"No live price data for {', '.join(offline)} — those use offline demo data.")
+        st.caption(
+            f"{len(symbols)} symbols · {req_period} of daily candles · min {req_touches} touches · "
+            f"min reward/risk {req_rr}"
+        )
+
+        total = summarize(results)
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Trades", total["trades"])
+        m2.metric("Win rate", "-" if total["win_rate"] is None else f"{total['win_rate']:.0%}")
+        m3.metric("Avg per trade", "-" if total["avg_return"] is None else f"{total['avg_return']:+.2%}")
+        m4.metric("Profit factor", "-" if total["profit_factor"] is None else f"{total['profit_factor']:.2f}")
+        m5.metric("Beat buy & hold", f"{total['beat_buy_hold']} of {total['symbols']}")
+
+        def _pct100(value):
+            return None if value is None else value * 100
+
+        overview = pd.DataFrame([
+            {
+                "symbol": r.symbol,
+                "trades": len(r.trades),
+                "win rate": _pct100(r.win_rate),
+                "avg per trade": _pct100(r.avg_return),
+                "strategy": r.total_return * 100,
+                "buy & hold": r.buy_hold_return * 100,
+                "max drawdown": r.max_drawdown * 100,
+                "time in market": r.time_in_market * 100,
+            }
+            for r in results
+        ]).sort_values("strategy", ascending=False)
+        pct = st.column_config.NumberColumn(format="%.1f%%")
+        signed = st.column_config.NumberColumn(format="%+.1f%%")
+        st.dataframe(
+            overview,
+            column_config={
+                "win rate": pct, "time in market": pct, "avg per trade": signed,
+                "strategy": signed, "buy & hold": signed, "max drawdown": signed,
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        pick = st.selectbox("Show trades for", list(overview["symbol"]))
+        pick_bars, pick_result, _ = runs[pick]
+        st.altair_chart(trades_chart(pick_bars, pick_result, theme=_theme()),
+                        use_container_width=True)
+        st.altair_chart(equity_chart(pick_result, theme=_theme()), use_container_width=True)
+        st.dataframe(
+            trades_frame(pick_result),
+            column_config={
+                "return_pct": st.column_config.NumberColumn("return", format="%+.2f%%"),
+                "entry_time": st.column_config.DateColumn("bought", format="YYYY-MM-DD"),
+                "entry_price": "buy price",
+                "exit_time": st.column_config.DateColumn("sold", format="YYYY-MM-DD"),
+                "exit_price": "sell price",
+                "exit_reason": "exit",
+                "outcome": None,
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
 
 with tab_levels:
     st.subheader("Support & resistance")

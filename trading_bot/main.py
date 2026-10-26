@@ -7,6 +7,7 @@ Usage:
     python -m trading_bot.main backtest --events events.csv --prices prices.csv
     python -m trading_bot.main levels AAPL BTC     # support/resistance
     python -m trading_bot.main levels --csv chart.csv
+    python -m trading_bot.main strategy --market us crypto   # support-bounce test
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import time
 from .analysis.support_resistance import SupportResistance, bars_from_csv_text, detect_levels
 from .app import TradingBotApp
 from .backtesting.backtest import run_backtest
+from .backtesting.support_bounce import BounceParams, BounceResult, backtest_support_bounce, summarize
 from .config import get_settings
 from .connectors.market_data import MarketDataProvider, infer_asset_class
 from .trading.paper_broker import PaperBroker
@@ -131,6 +133,64 @@ def cmd_levels(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pct(value) -> str:
+    return "-" if value is None else f"{value:+.1%}"
+
+
+def _print_bounce_row(r: BounceResult, source: str) -> None:
+    win = "-" if r.win_rate is None else f"{r.win_rate:.0%}"
+    print(
+        f"{r.symbol:<10} {source:>8} {len(r.trades):>6} {win:>5} {_pct(r.avg_return):>9} "
+        f"{_pct(r.total_return):>9} {_pct(r.buy_hold_return):>9} {_pct(r.max_drawdown):>7} "
+        f"{r.time_in_market:>6.0%}"
+    )
+
+
+def cmd_strategy(args: argparse.Namespace) -> int:
+    s = get_settings()
+    params = BounceParams.from_settings(s, min_touches=args.min_touches, min_reward_risk=args.min_rr)
+    print(
+        f"\nSupport-bounce backtest · daily candles · min {params.min_touches} touches · "
+        f"min reward/risk {params.min_reward_risk} · fee {params.fee_pct:.2%} per side\n"
+    )
+    print(f"{'SYMBOL':<10} {'DATA':>8} {'TRADES':>6} {'WIN':>5} {'AVG/TRADE':>9} "
+          f"{'STRATEGY':>9} {'BUY&HOLD':>9} {'MAX DD':>7} {'IN MKT':>6}")
+
+    if args.csv:
+        with open(args.csv, encoding="utf-8-sig") as f:
+            jobs = [(os.path.basename(args.csv), bars_from_csv_text(f.read()), "csv")]
+    else:
+        market_data = MarketDataProvider(s.market_data_provider)
+        jobs = []
+        for symbol in args.symbols or s.symbols_for(args.market):
+            history = market_data.get_history(symbol, infer_asset_class(symbol), period=args.period)
+            jobs.append((symbol, history.bars, history.source))
+
+    results = []
+    for symbol, bars, source in jobs:
+        r = backtest_support_bounce(bars, symbol, params)
+        results.append(r)
+        _print_bounce_row(r, source)
+        if args.trades:
+            for t in r.trades:
+                print(f"    {t.entry_time:%Y-%m-%d} buy {t.entry_price:.4g} (support {t.support:.4g}, "
+                      f"{t.support_touches}x) -> {t.exit_time:%Y-%m-%d} {t.exit_reason} "
+                      f"{t.exit_price:.4g}  {t.return_pct:+.1%}")
+
+    total = summarize(results)
+    if total["trades"]:
+        pf = "-" if total["profit_factor"] is None else f"{total['profit_factor']:.2f}"
+        print(
+            f"\nALL: {total['trades']} trades · win {total['win_rate']:.0%} · "
+            f"avg {total['avg_return']:+.2%} per trade · profit factor {pf} · "
+            f"beat buy & hold in {total['beat_buy_hold']} of {total['symbols']}"
+        )
+    else:
+        print("\nNo trades — the strategy never triggered on this data.")
+    print("Past results do not guarantee future returns.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="trading_bot")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -156,6 +216,17 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument("symbols", nargs="*")
     lv.add_argument("--csv", help="OHLC or close-only CSV file")
     lv.set_defaults(func=cmd_levels)
+
+    strat = sub.add_parser("strategy", help="backtest the support-bounce strategy")
+    strat.add_argument("symbols", nargs="*")
+    strat.add_argument("--market", nargs="+", default=["all"],
+                    choices=["us", "oslo", "europe", "crypto", "all"])
+    strat.add_argument("--period", default="5y", help="1y, 2y, 5y, 10y, max")
+    strat.add_argument("--csv", help="OHLC or close-only CSV file")
+    strat.add_argument("--min-touches", type=int, default=2)
+    strat.add_argument("--min-rr", type=float, default=1.5, help="minimum reward/risk")
+    strat.add_argument("--trades", action="store_true", help="list every trade")
+    strat.set_defaults(func=cmd_strategy)
 
     return p
 
