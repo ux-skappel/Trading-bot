@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -28,7 +29,7 @@ SESSION = str(Path(__file__).resolve().parents[2] / "telegram")
 GENERAL_TOPIC = 1
 
 
-def _client():
+def _client(listening: bool = False):
     from telethon import TelegramClient  # type: ignore
 
     s = get_settings()
@@ -37,6 +38,9 @@ def _client():
             "Telegram is not set up. Create an app at https://my.telegram.org (API development "
             "tools) and put TELEGRAM_API_ID and TELEGRAM_API_HASH in your .env file."
         )
+    if listening:   # keep trying through Wi-Fi drops and sleep, and fetch what was missed
+        return TelegramClient(SESSION, int(s.telegram_api_id), s.telegram_api_hash,
+                              connection_retries=None, retry_delay=10, auto_reconnect=True, catch_up=True)
     return TelegramClient(SESSION, int(s.telegram_api_id), s.telegram_api_hash)
 
 
@@ -318,7 +322,7 @@ def run(command: str, days: int = 90, limit: int = 500, fresh: bool = False) -> 
     """Entry point for the CLI: login | chats | authors | topics | backfill | listen."""
     init_db()
     s = get_settings()
-    client = _client()
+    client = _client(listening=command == "listen")
     jobs = {
         "login": lambda: _login(client),
         "chats": lambda: _list_chats(client),
@@ -336,4 +340,13 @@ def run(command: str, days: int = 90, limit: int = 500, fresh: bool = False) -> 
         finally:
             await client.disconnect()
 
-    client.loop.run_until_complete(main())
+    if command != "listen":
+        client.loop.run_until_complete(main())
+        return
+    while True:   # listening never gives up: after a lost connection it starts again and catches up
+        try:
+            client.loop.run_until_complete(main())
+            print("Disconnected from Telegram. Connecting again in 30 s...", flush=True)
+        except (OSError, ConnectionError) as exc:
+            print(f"No connection to Telegram ({exc}). Trying again in 30 s...", flush=True)
+        time.sleep(30)
