@@ -133,9 +133,14 @@ def _is_image(msg) -> bool:
     return bool(getattr(msg, "photo", None)) or mime.startswith("image/")
 
 
+def _says_sell(text: str) -> bool:
+    """Only sells and stop moves need his picture (to see which position); buys name the coin."""
+    return bool(text) and any(s.action in ("close", "move_sl") for s in parse_signals(text))
+
+
 async def _read_image(chat_id, msg) -> Optional[str]:
-    """Download one of his images and read its text on this computer (once per image)."""
-    if not _is_image(msg) or has_image_text(str(chat_id), msg.id):
+    """Download the image on one of his sell posts and read its text on this computer (once)."""
+    if not _is_image(msg) or not _says_sell(msg.message) or has_image_text(str(chat_id), msg.id):
         return None
     if (getattr(msg.file, "size", 0) or 0) > 10_000_000:
         return None
@@ -212,7 +217,7 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
     plan = [(t, False) for t in (topic_ids or [None])] + [(t, True) for t in sell_ids]
     for topic_id, sell_only in plan:
         counts = {"new": 0, "edited": 0, "same": 0}
-        images_only = images_read = 0
+        images_only = images_read = scanned = 0
         if topic_id is None:
             messages = client.iter_messages(entity, from_user=who)
         elif topic_id == GENERAL_TOPIC:
@@ -222,6 +227,10 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
         async for msg in messages:
             if _utc(msg.date) < since:
                 break
+            scanned += 1
+            if scanned % 500 == 0:   # it reads newest first, back to `since`
+                print(f"  ...now at {_utc(msg.date):%Y-%m-%d} (stops at {since:%Y-%m-%d}), "
+                      f"{images_read} sell images read", flush=True)
             if who is not None and msg.sender_id != who.id:
                 continue
             if topic_id == GENERAL_TOPIC and _topic_of(msg) != GENERAL_TOPIC:
@@ -234,15 +243,12 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
                 mark_sell_only(str(entity.id), msg.id)
             if await _read_image(entity.id, msg):
                 images_read += 1
-                if images_read % 25 == 0:   # it reads newest first, back to `since`
-                    print(f"  ...read {images_read} images so far, now at {_utc(msg.date):%Y-%m-%d} "
-                          f"(stops at {since:%Y-%m-%d})", flush=True)
         where = f" in topic {topic_id}" if topic_id is not None else ""
         if sell_only:
             where += " (sells only)"
         extra = f", {images_only} of them image-only" if images_only else ""
         if images_read:
-            extra += f", text read from {images_read} images"
+            extra += f", text read from {images_read} images on sell posts"
         print(f"Fetched {sum(counts.values())} posts{where} from the last {days} days "
               f"({counts['new']} new{extra}).")
 
@@ -280,9 +286,7 @@ async def _listen(client, chat: str, author: str, topic: str, sell_topics: str =
                 _save(entity.id, msg)
                 if sell_only:
                     mark_sell_only(str(entity.id), msg.id)
-                read = await _read_image(entity.id, msg)
-                shown = f"text {read[:60]!r}" if read else "no readable text"
-                print(f"[{stamp} UTC] image saved ({shown}); replies to it are followed")
+                print(f"[{stamp} UTC] image saved; replies to it are followed")
             return
         signals = parse_signals(msg.message)
         seen = datetime.utcnow()

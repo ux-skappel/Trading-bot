@@ -1,6 +1,21 @@
 from types import SimpleNamespace as NS
 
-from trading_bot.copytrade.telegram_reader import GENERAL_TOPIC, _reply_id, _topic_of
+import pytest
+
+from trading_bot.copytrade.telegram_reader import GENERAL_TOPIC, _reply_id, _says_sell, _topic_of
+
+
+@pytest.mark.parametrize("caption,read", [
+    ("SELGER HELE NÅ 🔼🤑", True),
+    ("Solgt halvparten", True),
+    ("SL i profitt på $81.2K", True),
+    ("GOOGLE LONG 🔼 Bruker 20X giring og SL på $320", False),
+    ("Se så fint det gikk 🤑", False),
+    ("", False),
+    (None, False),
+])
+def test_only_pictures_on_sell_posts_are_read(caption, read):
+    assert _says_sell(caption) is read
 
 
 def reply(msg_id=None, top_id=None, forum_topic=False):

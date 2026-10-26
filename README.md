@@ -220,8 +220,9 @@ the toggle in the tab) replays all stored posts as a clearly labelled test.
 built-in text recognition (offline, free, no API key) to see which of your
 open positions he means. A picture can only pick which open position to act
 on, never open a new trade; if it names several open positions the bot
-doesn't guess. Replies to images are followed back to the original trade
-post. `copy images` shows what was read.
+doesn't guess. Only pictures on his sell and stop posts are read (the rest
+are skipped to save time); replies to images are still followed back to the
+original trade post. `copy images` shows what was read.
 
 **Sells posted in other topics.** `COPY_SELL_TOPICS` (e.g. his stocks and
 crypto discussion topics) are read too, but only for sells and stop updates,

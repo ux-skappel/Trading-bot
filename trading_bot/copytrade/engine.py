@@ -435,7 +435,7 @@ class CopyEngine:
             self._advance(trade, at)
         late = (at - post.time).total_seconds() / 60
         if not post.text.strip():
-            seen = f": {post.image_text[:80]!r}" if post.image_text else " (content couldn't be read)"
+            seen = f": {post.image_text[:80]!r}" if post.image_text else ""
             self.outcomes.append(PostOutcome(post, parse_signals("")[0],
                                              f"image, kept so replies to it can be followed{seen}"))
             return
