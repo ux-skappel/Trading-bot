@@ -175,3 +175,17 @@ def test_buy_hold_and_summary():
     s = summarize([r, backtest_support_bounce(_candles(CYCLE), "SHORT", P)])
     assert s["symbols"] == 2 and s["trades"] == 2
     assert s["win_rate"] == 1.0 and s["profit_factor"] is None
+
+
+def test_whole_account_compounds_every_trade_in_order():
+    from datetime import datetime
+    from trading_bot.backtesting.support_bounce import BounceResult, BounceTrade, shared_account
+
+    def trade(day, ret):
+        t = datetime(2026, 1, day)
+        return BounceTrade("X", t, 100, 95, 110, 96, 2, 1.0, t, 100, "time", ret, 1)
+
+    results = [BounceResult("A", [trade(1, 0.10), trade(3, -0.20)]), BounceResult("B", [trade(2, 0.10)])]
+    total, worst = shared_account(results)
+    assert math.isclose(total, 1.1 * 1.1 * 0.8 - 1)
+    assert math.isclose(worst, -0.20)

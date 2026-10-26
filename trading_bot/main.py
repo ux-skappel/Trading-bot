@@ -203,7 +203,9 @@ def cmd_strategy(args: argparse.Namespace) -> int:
             f"\nALL: {total['trades']} trades · win {total['win_rate']:.0%} · "
             f"avg {total['avg_return']:+.2%} per trade · profit factor {pf} · "
             f"avg {total['avg_days_held']:.1f} days held · "
-            f"beat buy & hold in {total['beat_buy_hold']} of {total['symbols']}"
+            f"beat buy & hold in {total['beat_buy_hold']} of {total['symbols']}\n"
+            f"     one account taking every trade: {total['account_return']:+.1%} "
+            f"(biggest fall {total['account_max_drawdown']:+.1%})"
         )
         if params.leverage > 1:
             print(f"     {total['liquidations']} liquidations · "

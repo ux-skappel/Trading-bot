@@ -218,6 +218,12 @@ with tab_strategy:
         )
 
         total = summarize(results)
+        a1, a2 = st.columns(2)
+        a1.metric("Whole account", f"{total['account_return']:+.1%}",
+                  help="One account taking every trade of every symbol, each sized on the whole "
+                       "account (e.g. risking 5% of it). This is what following all signals does.")
+        a2.metric("Whole account: biggest fall", f"{total['account_max_drawdown']:+.1%}",
+                  help="Largest drop from a high point of that one account")
         m1, m2, m3, m4, m4b = st.columns(5)
         m1.metric("Trades", total["trades"])
         m2.metric("Win rate", "-" if total["win_rate"] is None else f"{total['win_rate']:.0%}")

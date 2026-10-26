@@ -328,13 +328,31 @@ def backtest_support_bounce(
     )
 
 
+def shared_account(results: List[BounceResult]) -> Tuple[float, float]:
+    """(total return, max drawdown) of ONE account taking every trade of every symbol.
+
+    Each trade is sized on the whole account (e.g. risking 2% of it), in the
+    order trades close, so this is what following all signals would have done.
+    Per-symbol results instead give each symbol its own account and hide this.
+    """
+    equity, peak, worst = 1.0, 1.0, 0.0
+    for t in sorted((t for r in results for t in r.trades), key=lambda t: t.exit_time):
+        equity *= 1 + t.return_pct
+        peak = max(peak, equity)
+        worst = min(worst, equity / peak - 1)
+    return equity - 1, worst
+
+
 def summarize(results: List[BounceResult]) -> Dict[str, Optional[float]]:
     """Pool all trades across symbols into headline numbers."""
     trades = [t for r in results for t in r.trades]
     returns = [t.return_pct for t in trades]
     gains = sum(r for r in returns if r > 0)
     losses = -sum(r for r in returns if r < 0)
+    account, account_dd = shared_account(results)
     return {
+        "account_return": account,
+        "account_max_drawdown": account_dd,
         "symbols": len(results),
         "trades": len(trades),
         "win_rate": sum(1 for r in returns if r > 0) / len(returns) if returns else None,
