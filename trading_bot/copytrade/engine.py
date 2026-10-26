@@ -203,6 +203,7 @@ class CopyEngine:
         self.cash = self.cfg.start_equity
         self.trades: List[CopyTrade] = []
         self.by_message: Dict[int, List[CopyTrade]] = {}   # post -> trades it opened or updated
+        self.posts_by_id: Dict[int, Post] = {}             # every post, to follow reply chains
         self.events: List[Tuple[datetime, float]] = []
         self.outcomes: List[PostOutcome] = []
         self._bars: Dict[str, List[Bar]] = {}
@@ -368,9 +369,21 @@ class CopyEngine:
         if trade not in linked:
             linked.append(trade)
 
+    def _linked_trades(self, post: Post) -> Optional[List[CopyTrade]]:
+        """Trades behind the post he replied to, following replies to replies (and to images)."""
+        rid, seen = post.reply_to, set()
+        while rid and rid not in seen and len(seen) < 8:
+            seen.add(rid)
+            if rid in self.by_message:
+                return self.by_message[rid]
+            parent = self.posts_by_id.get(rid)
+            rid = parent.reply_to if parent else None
+        return None
+
     def _targets_for(self, post: Post, sig: Signal, statuses: Tuple[str, ...]) -> Tuple[List[CopyTrade], str]:
-        if post.reply_to and post.reply_to in self.by_message:
-            linked = [t for t in self.by_message[post.reply_to] if t.status in statuses]
+        replied = self._linked_trades(post)
+        if replied is not None:
+            linked = [t for t in replied if t.status in statuses]
             if not sig.symbol:
                 return linked, "reply"
             named = [t for t in linked if t.symbol == sig.symbol]
@@ -392,6 +405,10 @@ class CopyEngine:
         for trade in self._active():
             self._advance(trade, at)
         late = (at - post.time).total_seconds() / 60
+        if not post.text.strip():
+            self.outcomes.append(PostOutcome(post, parse_signals("")[0],
+                                             "image: kept so replies to it can be followed (content can't be read)"))
+            return
         for sig in parse_signals(post.text):
             if sig.action == "open" and late > self.cfg.max_open_delay_minutes:
                 outcome = (f"missed: seen {late:.1f} min after he posted (limit "
@@ -418,12 +435,7 @@ class CopyEngine:
                 for t in pending:
                     t.status, t.note = "cancelled", "he closed before our entry filled"
                 return f"cancelled pending {', '.join(f'#{t.number}' for t in pending)}"
-            done_before = [t for t in self.trades if t.status == "closed"
-                           and (not sig.symbol or t.symbol == sig.symbol)]
-            if done_before:
-                last = done_before[-1]
-                return f"ignored: #{last.number} {last.symbol} was already closed ({last.fills[-1].reason})"
-            return f"ignored: no open position{' for ' + sig.symbol if sig.symbol else ''}"
+            return self._ignored(post, sig)
         done = []
         for t in trades:
             self._link(post.message_id, t)
@@ -438,6 +450,21 @@ class CopyEngine:
                 done.append(f"stop on #{t.number} now {t.stop:g}")
         suffix = " (no coin named: latest position)" if how == "latest" else ""
         return "; ".join(done) + suffix if done else "no price data"
+
+    def _ignored(self, post: Post, sig: Signal) -> str:
+        """Say exactly why a sell/stop update had nothing to act on."""
+        def describe(t: CopyTrade) -> str:
+            why = t.fills[-1].reason if t.fills else t.note or t.status
+            return f"#{t.number} {t.symbol} ({t.status}: {why})"
+        replied = self._linked_trades(post)
+        if replied:
+            return f"ignored: he replied to {', '.join(describe(t) for t in replied)}, which is no longer open"
+        if sig.symbol:
+            earlier = [t for t in self.trades if t.symbol == sig.symbol]
+            if earlier:
+                return f"ignored: no open {sig.symbol} position ({describe(earlier[-1])})"
+            return f"ignored: no {sig.symbol} position was ever copied"
+        return "ignored: no open position, and the post doesn't say what was sold"
 
     def _seen_price(self, post: Post, symbol: str) -> Optional[float]:
         """Live account: the price captured when the bot saw the post, if any."""
@@ -482,11 +509,15 @@ class CopyEngine:
         if trade.his_entry is None:
             trade.his_entry = price
             self._open(trade, bar.timestamp, price)
+            if trade.status == "skipped":
+                return f"#{number} not bought: {trade.note} (all margin is in open positions)"
             return f"#{number} opened at {price:g} (market){self._size_note(trade)}{capped}"
         d = trade.direction
         edge = sig.entry_high if d == 1 else sig.entry_low
         if d * (price - edge) <= edge * self.cfg.max_slippage_pct:
             self._open(trade, bar.timestamp, price)
+            if trade.status == "skipped":
+                return f"#{number} not bought: {trade.note} (all margin is in open positions)"
             return f"#{number} opened at {price:g} (his entry {self._entry_text(sig)}){self._size_note(trade)}{capped}"
         trade.limit_price = edge
         trade.status = "pending"
@@ -530,6 +561,7 @@ def replay(posts: List[Post], candles: CandleSource, config: Optional[CopyConfig
            snapshot: Optional[Snapshot] = None) -> CopyResult:
     """Run all posts (any order) through a fresh engine."""
     engine = CopyEngine(candles, config, max_leverage, snapshot)
+    engine.posts_by_id = {p.message_id: p for p in posts}
     since = engine.cfg.live_since
     chosen = [p for p in posts if since is None or p.time >= since]
     for post in sorted(chosen, key=lambda p: (engine.act_time(p), p.message_id)):

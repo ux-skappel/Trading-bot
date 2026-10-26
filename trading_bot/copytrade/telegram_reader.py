@@ -202,12 +202,12 @@ async def _backfill(client, chat: str, author: str, topics: str, days: int, fres
                 continue
             if topic_id == GENERAL_TOPIC and _topic_of(msg) != GENERAL_TOPIC:
                 continue
-            if not msg.message:
-                images_only += msg.media is not None
+            if not msg.message and msg.media is None:
                 continue
-            counts[_save(entity.id, msg)] += 1
+            images_only += not msg.message
+            counts[_save(entity.id, msg)] += 1   # images too, so replies to them can be followed
         where = f" in topic {topic_id}" if topic_id is not None else ""
-        extra = f", {images_only} images without text skipped" if images_only else ""
+        extra = f", {images_only} of them images (content can't be read)" if images_only else ""
         print(f"Fetched {sum(counts.values())} posts{where} from the last {days} days "
               f"({counts['new']} new{extra}).")
 
@@ -239,7 +239,8 @@ async def _listen(client, chat: str, author: str, topic: str) -> None:
         stamp = _utc(msg.date).strftime("%Y-%m-%d %H:%M")
         if not msg.message:
             if msg.media:
-                print(f"[{stamp} UTC] image without text: skipped")
+                _save(entity.id, msg)
+                print(f"[{stamp} UTC] image saved (its content can't be read; replies to it are followed)")
             return
         signals = parse_signals(msg.message)
         seen = datetime.utcnow()

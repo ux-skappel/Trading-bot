@@ -148,7 +148,7 @@ def test_sold_all_by_reply_to_an_already_closed_trade_is_ignored():
     r = replay(posts, source(data), FREE)
     sol, eth = r.trades
     assert sol.fills[-1].reason == "stop" and eth.status == "open"
-    assert "already closed" in r.posts[-1].outcome
+    assert "he replied to #1 SOL (closed: stop)" in r.posts[-1].outcome
 
 
 def test_market_max_leverage_caps_his_leverage_and_sets_margin():
@@ -215,3 +215,31 @@ def test_live_buy_later_than_two_minutes_is_skipped():
                 received_at=T0 + timedelta(minutes=3, seconds=30))
     r = replay([late], source(data), CopyConfig(live_since=T0))
     assert r.trades == [] and "missed" in r.posts[0].outcome
+
+
+def test_sell_replying_to_an_image_reply_finds_the_original_trade():
+    data = minutes([100, 100, 101, 102, 103, 104, 105], symbol="SPCX")
+    posts = [post(0, "SPACEX LONG 🔼 Bruker 10X giring og SL $90", mid=70),
+             post(2, "", mid=71, reply=70),                              # chart image replying to the trade
+             post(4, "BOOM 🔼🔼 SELGER HELE NÅ", mid=72, reply=71)]       # sell replying to the image
+    r = replay(posts, source(data), FREE)
+    t = r.trades[0]
+    assert t.status == "closed" and t.fills[-1].reason == "his close"
+    assert "image" in r.posts[1].outcome
+
+
+def test_ignored_sell_says_which_trade_he_replied_to():
+    data = minutes([100, 100, 94, 93, 93, 93], symbol="SPCX")
+    posts = [post(0, "SPACEX LONG 🔼 Bruker 10X giring og SL $95", mid=80),
+             post(3, "SELGER HELE NÅ", mid=81, reply=80)]
+    r = replay(posts, source(data), FREE)
+    assert "he replied to #1 SPCX (closed: stop)" in r.posts[-1].outcome
+
+
+def test_trade_without_free_margin_is_reported_as_not_bought():
+    data = {**minutes([100] * 6), **minutes([50] * 6, symbol="ETH")}
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring, 100% av porteføljen", mid=90),
+             post(1, "ETH LONG 🔼 Bruker 10X giring", mid=91)]
+    r = replay(posts, source(data), FREE)
+    assert r.trades[1].status == "skipped"
+    assert "not bought" in r.posts[1].outcome

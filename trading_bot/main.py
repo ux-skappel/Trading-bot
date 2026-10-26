@@ -255,8 +255,8 @@ def cmd_copy(args: argparse.Namespace) -> int:
             sig = parse_signal(post.text)
             print(f"\n--- {post.time:%Y-%m-%d %H:%M} UTC · message {post.message_id}"
                   f"{' · reply to ' + str(post.reply_to) if post.reply_to else ''}")
-            print(post.text.strip())
-            print(f">>> {sig.summary()}")
+            print(post.text.strip() or "(image)")
+            print(f">>> {sig.summary() if post.text.strip() else 'image: content cannot be read'}")
         return 0
     if args.copy_cmd == "parse":
         sig = parse_signal(" ".join(args.text))
