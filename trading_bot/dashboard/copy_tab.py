@@ -18,6 +18,7 @@ from ..copytrade.store import (export_authors, get_live_since, import_telegram_e
 from .sr_chart import SUPPORT
 
 TONE = {"very_risky": "⚠️⚠️ very risky", "risky": "⚠️ risky", "strong": "💪 strong"}
+TOTAL = "#eb6834"   # categorical slot 2 next to SUPPORT's blue (validated pair, light and dark)
 
 SETUP = """
 **Two ways to get his posts in:**
@@ -73,14 +74,23 @@ def _import_box() -> None:
 
 
 def _equity_chart(result: CopyResult) -> alt.Chart:
-    rows = [{"time": result.posts[0].post.time, "equity": result.start_equity}] if result.posts else []
-    rows += [{"time": t, "equity": v} for t, v in result.equity]
-    df = pd.DataFrame(rows)
-    return alt.Chart(df).mark_line(strokeWidth=2, interpolate="step-after", color=SUPPORT).encode(
+    """The account (after the monthly withdrawals) and, once money was taken out, the total."""
+    first = [(result.posts[0].post.time, result.start_equity)] if result.posts else []
+    series = [("Account", first + result.balance)]
+    if result.withdrawals:
+        series.append(("Total incl. taken out", first + result.equity))
+    df = pd.DataFrame([{"time": t, "value": v, "series": name} for name, points in series for t, v in points])
+    names = [name for name, _ in series]
+    return alt.Chart(df).mark_line(strokeWidth=2, interpolate="step-after").encode(
         x=alt.X("time:T", title=None),
-        y=alt.Y("equity:Q", title="Paper account ($)", scale=alt.Scale(zero=False)),
-        tooltip=[alt.Tooltip("time:T", title="Time", format="%Y-%m-%d %H:%M"),
-                 alt.Tooltip("equity:Q", title="Account", format="$,.2f")],
+        y=alt.Y("value:Q", title="Paper account ($)", scale=alt.Scale(zero=False)),
+        color=alt.Color("series:N", title=None, scale=alt.Scale(domain=names, range=[SUPPORT, TOTAL][:len(names)]),
+                        legend=alt.Legend(orient="top") if len(names) > 1 else None),
+        strokeDash=alt.StrokeDash("series:N", scale=alt.Scale(domain=names, range=[[1, 0], [6, 3]][:len(names)]),
+                                  legend=None),
+        tooltip=[alt.Tooltip("series:N", title=" "),
+                 alt.Tooltip("time:T", title="Time", format="%Y-%m-%d %H:%M"),
+                 alt.Tooltip("value:Q", title="Value", format="$,.2f")],
     ).properties(height=260)
 
 
@@ -142,6 +152,13 @@ def render(settings) -> None:
     m8.metric("Entry vs his", "-" if result.avg_delay_cost is None else f"{result.avg_delay_cost:+.2%}",
               help="How much worse our average entry was than the entry he posted (positive = worse)")
 
+    if config.withdraw_monthly:
+        w1, w2, w3, _ = st.columns(4)
+        w1.metric("Taken out (month ends)", f"${result.withdrawn:,.0f}",
+                  help="All profit above the start amount is taken out at the end of each month, "
+                       "so every month trades from the start amount again")
+        w2.metric("In the account now", f"${result.account_now:,.0f}", help="Realized, after withdrawals")
+        w3.metric("Months with a payout", len(result.withdrawals))
     if result.equity:
         st.altair_chart(_equity_chart(result), use_container_width=True)
 

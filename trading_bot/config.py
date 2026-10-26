@@ -101,6 +101,7 @@ class Settings:
     copy_size_very_risky: float = field(default_factory=lambda: float(_str("COPY_SIZE_VERY_RISKY", "0.25")))
     copy_size_risky: float = field(default_factory=lambda: float(_str("COPY_SIZE_RISKY", "0.5")))
     copy_size_strong: float = field(default_factory=lambda: float(_str("COPY_SIZE_STRONG", "1.5")))
+    copy_withdraw_monthly: bool = field(default_factory=lambda: _bool("COPY_WITHDRAW_MONTHLY", True))
 
     # --- Storage ---
     database_url: str = field(

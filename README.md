@@ -248,6 +248,12 @@ or picture) is ignored rather than guessed. The Copy trading tab lists
 positions open for more than 3 days without a sell, with whether they have a
 stop loss.
 
+**Monthly payout.** At the end of each month all profit above the start
+amount is taken out (`COPY_WITHDRAW_MONTHLY=true`), so every month trades
+from the start amount again; a month that ends below it takes nothing out and
+nothing is topped up. The tab shows what was taken out and plots the account
+next to the total including withdrawals.
+
 **Size by how sure he sounds.** When his post gives no size, the default
 margin is scaled by his wording: "veldig risky", "risky ⚠️⚠️" or "gamble"
 → ×0.25; "risky", ⚠️ or "ikke stor posisjon" → ×0.5; "klink support",

@@ -472,3 +472,38 @@ def test_sizes_grow_with_the_account_after_a_win():
                                                          share_margin=share)).trades
         assert sol.pnl == pytest.approx(1_000)                 # +10% on a $10,000 position
         assert eth.margin == pytest.approx(0.10 * 11_000)      # 10% of the new $11,000
+
+
+def _month_end_run(withdraw, sol_path):
+    start = datetime(2026, 1, 31, 23, 50)
+    def bars(path):
+        out, prev = [], path[0]
+        for i, price in enumerate(path):
+            out.append(Bar(start + timedelta(minutes=i), prev, max(prev, price), min(prev, price), price))
+            prev = price
+        return out
+    data = {"SOL": bars(sol_path), "ETH": bars([50] * len(sol_path))}
+    posts = [Post(1, start + timedelta(seconds=30), "SOL LONG 🔼 Bruker 10X giring"),
+             Post(2, start + timedelta(minutes=5, seconds=30), "Selger hele nå", reply_to=1),
+             Post(3, start + timedelta(minutes=15, seconds=30), "ETH LONG 🔼 Bruker 10X giring")]   # Feb 1, 00:05
+    cfg = CopyConfig(fee_pct=0, funding_pct_per_day=0, withdraw_monthly=withdraw)
+    return replay(posts, source(data), cfg, now=start + timedelta(minutes=20))
+
+
+def test_profit_is_taken_out_at_the_month_end():
+    r = _month_end_run(True, [100] * 3 + [110] * 17)            # SOL +10% at 10x: +$1,000 in January
+    sol, eth = r.trades
+    assert sol.pnl == pytest.approx(1_000)
+    assert r.withdrawals == [(datetime(2026, 2, 1), pytest.approx(1_000))]
+    assert eth.margin == pytest.approx(1_000)                    # February starts from $10,000 again
+    assert r.account_now == pytest.approx(10_000) and r.realized_pnl == pytest.approx(1_000)
+
+
+def test_a_losing_month_takes_nothing_out():
+    r = _month_end_run(True, [100] * 3 + [95] * 17)
+    assert r.withdrawals == [] and r.trades[1].margin == pytest.approx(0.10 * 9_500)
+
+
+def test_withdrawals_can_be_switched_off():
+    r = _month_end_run(False, [100] * 3 + [110] * 17)
+    assert r.withdrawals == [] and r.trades[1].margin == pytest.approx(1_100)

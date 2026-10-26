@@ -85,6 +85,9 @@ class CopyConfig:
     # need free margin (live). False: they never block a later call, so a position
     # whose exit was never seen can't stop his later trades (history test).
     share_margin: bool = True
+    # At each month end (UTC) take out everything above the start amount, so every month
+    # trades from the start amount again. A month below it takes nothing out (no top-ups).
+    withdraw_monthly: bool = True
 
     @classmethod
     def from_settings(cls, settings) -> "CopyConfig":
@@ -97,6 +100,7 @@ class CopyConfig:
             size_very_risky=settings.copy_size_very_risky,
             size_risky=settings.copy_size_risky,
             size_strong=settings.copy_size_strong,
+            withdraw_monthly=settings.copy_withdraw_monthly,
         )
 
     def confidence_scale(self, confidence: str) -> float:
@@ -192,8 +196,19 @@ class PostOutcome:
 class CopyResult:
     trades: List[CopyTrade]
     posts: List[PostOutcome]
-    equity: List[Tuple[datetime, float]]       # realized equity over time
+    equity: List[Tuple[datetime, float]]       # realized equity over time, money taken out included
     start_equity: float
+    withdrawals: List[Tuple[datetime, float]] = field(default_factory=list)   # (month end, amount)
+    balance: List[Tuple[datetime, float]] = field(default_factory=list)       # the account after withdrawals
+
+    @property
+    def withdrawn(self) -> float:
+        return sum(amount for _, amount in self.withdrawals)
+
+    @property
+    def account_now(self) -> float:
+        """What is in the account now (realized), after the monthly withdrawals."""
+        return self.start_equity + self.realized_pnl - self.withdrawn
 
     @property
     def closed(self) -> List[CopyTrade]:
@@ -249,6 +264,8 @@ class CopyEngine:
         self._bars: Dict[str, List[Bar]] = {}
         self._stamps: Dict[str, List[datetime]] = {}
         self._interval: Dict[str, timedelta] = {}
+        self.withdrawals: List[Tuple[datetime, float]] = []
+        self._month_checked: Optional[datetime] = self.cfg.live_since
         self._cursor: Dict[int, int] = {}
 
     # --- prices -------------------------------------------------------------
@@ -472,8 +489,27 @@ class CopyEngine:
             return post.received_at
         return post.time
 
+    def _withdraw_until(self, until: datetime) -> None:
+        """Take out everything above the start amount at each month end up to ``until``."""
+        if not self.cfg.withdraw_monthly:
+            return
+        if self._month_checked is None:
+            self._month_checked = until
+            return
+        month_end = _next_month(self._month_checked)
+        while month_end <= until:
+            for trade in self._active():   # stops and targets before the month end count first
+                self._advance(trade, month_end)
+            profit = self.cash - self.cfg.start_equity
+            if profit > 0:
+                self.cash -= profit
+                self.withdrawals.append((month_end, profit))
+            month_end = _next_month(month_end)
+        self._month_checked = max(self._month_checked, until)
+
     def handle(self, post: Post) -> None:
         at = self.act_time(post)
+        self._withdraw_until(at)
         for trade in self._active():
             self._advance(trade, at)
         late = (at - post.time).total_seconds() / 60
@@ -685,6 +721,7 @@ class CopyEngine:
 
     def finish(self, now: Optional[datetime] = None) -> CopyResult:
         now = now or datetime.utcnow()
+        self._withdraw_until(now)
         for trade in self._active():
             self._advance(trade, now)
         for trade in self._active():
@@ -696,7 +733,18 @@ class CopyEngine:
         for t, delta in sorted(self.events, key=lambda e: e[0]):
             running += delta
             equity.append((t, running))
-        return CopyResult(self.trades, self.outcomes, equity, self.cfg.start_equity)
+        balance, money = [], self.cfg.start_equity
+        moves = [(t, d) for t, d in self.events] + [(t, -amount) for t, amount in self.withdrawals]
+        for t, delta in sorted(moves, key=lambda e: e[0]):
+            money += delta
+            balance.append((t, money))
+        return CopyResult(self.trades, self.outcomes, equity, self.cfg.start_equity,
+                          list(self.withdrawals), balance)
+
+
+def _next_month(t: datetime) -> datetime:
+    """Midnight UTC at the start of the month after ``t``."""
+    return datetime(t.year + (t.month == 12), t.month % 12 + 1, 1)
 
 
 def feed_snapshot(feed, snapshots: Dict[int, Dict[str, float]]) -> Snapshot:

@@ -238,6 +238,10 @@ def _print_copy_report(result) -> None:
     delay = "-" if result.avg_delay_cost is None else f"{result.avg_delay_cost:+.2%}"
     print(f"\nRealized ${result.realized_pnl:+,.2f} ({result.total_return:+.1%} of ${result.start_equity:,.0f}) · "
           f"win rate {win} · max drawdown {result.max_drawdown:+.1%} · avg entry vs his {delay}")
+    if result.withdrawals:
+        print(f"Taken out at month ends: ${result.withdrawn:,.0f} ("
+              + ", ".join(f"{t:%b}: ${a:,.0f}" for t, a in result.withdrawals)
+              + f") · in the account now ${result.account_now:,.0f}")
     print("Paper only: no real orders. Past results do not guarantee future returns.")
 
 
