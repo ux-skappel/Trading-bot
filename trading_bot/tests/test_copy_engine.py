@@ -507,3 +507,13 @@ def test_a_losing_month_takes_nothing_out():
 def test_withdrawals_can_be_switched_off():
     r = _month_end_run(False, [100] * 3 + [110] * 17)
     assert r.withdrawals == [] and r.trades[1].margin == pytest.approx(1_100)
+
+
+def test_going_short_closes_his_long_in_the_same_coin():
+    # He never posts a sell for the long, but a short in the same coin can't sit next to it on Liquid.
+    data = minutes([100, 100, 104, 108, 108, 108])
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring", mid=300),
+             post(3, "SOL SHORT 🔽 Bruker 10X giring og SL på $112", mid=301)]
+    long, short = replay(posts, source(data), FREE).trades
+    assert long.status == "closed" and long.fills[-1].reason == "flipped"
+    assert long.fills[-1].price == short.entry_price and short.status == "open"

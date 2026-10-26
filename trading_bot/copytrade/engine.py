@@ -18,6 +18,8 @@ realized gain and loss so far, so winners make later trades bigger.
 
 Exits: his stop loss, his targets (the position is split equally across
 them), and his follow-up posts (close / close part / move stop / cancel).
+Liquid holds one position per coin, so a trade the other way in the same coin
+closes the old one first ("flipped").
 Costs follow Liquid perps: taker fee per side, base funding per day (longs
 pay, shorts receive), and isolated-margin liquidation at the maintenance
 margin. When a candle touches both a stop and a target, the stop is assumed
@@ -314,6 +316,11 @@ class CopyEngine:
             trade.status = "closed"
 
     def _open(self, trade: CopyTrade, t: datetime, price: float) -> None:
+        # Liquid (Hyperliquid) holds one position per coin: going short closes a long first.
+        for other in self.trades:
+            if other.status == "open" and other.symbol == trade.symbol and other.side != trade.side:
+                self._book(other, t, price, other.remaining, "flipped")
+                other.note += f" · closed when he went {trade.side} {trade.symbol} (#{trade.number})"
         sig = trade.signal
         equity = self.cash   # start + realized P/L: sizes grow after wins, shrink after losses
         lev = trade.leverage
