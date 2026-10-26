@@ -248,7 +248,7 @@ HEADLINE_SIDE_FIRST = re.compile(
 
 
 def _headline(text: str):
-    """(side, [symbols]) for 'GOOGLE LONG' / 'LONGER BLOOM OG WESTERN' / 'LONG $SOL'."""
+    """(side, [symbols], end) for 'GOOGLE LONG' / 'LONGER BLOOM OG WESTERN' / 'LONG $SOL'."""
     for pattern in (HEADLINE_SYMBOL_FIRST, HEADLINE_SIDE_FIRST):
         for m in pattern.finditer(text):
             side = "short" if m.group("side").lower().startswith("short") else "long"
@@ -257,8 +257,8 @@ def _headline(text: str):
                 tokens = [tokens[0].split()[-1]] + tokens[1:] if tokens else tokens
             symbols = [s for s in (normalize_symbol(t) for t in tokens) if s]
             if symbols and len(symbols) == len(tokens):
-                return side, list(dict.fromkeys(symbols))
-    return None, []
+                return side, list(dict.fromkeys(symbols)), m.end()
+    return None, [], 0
 
 
 def _side(lower: str, has_levels: bool) -> Optional[str]:
@@ -320,15 +320,15 @@ STRONG = re.compile(
     r"|oversolgt\W+(?:\w+\W+){0,3}support|support\W+(?:\w+\W+){0,3}oversolgt")
 
 
-# Meme captions ("me when I long TESLA at the top 😂") are never bought unless the
-# post also carries something only a real call has.
+# A real call has leverage, a stop, levels or 🔼/🔽 right after "HOOD LONG"; chat that
+# mentions a side ("kvartalsrapport for HOOD … short") or a meme caption never does.
 JOKE = re.compile(r"[😂🤣😆😅💀🙈]|\b(?:haha\w*|hehe\w*|lol|lmao|meme\w*)\b")
 TRADE_MARK = re.compile(r"[🔼🔽📈📉]")
 
 
-def _has_trade_details(sig: Signal, raw: str) -> bool:
+def _has_trade_details(sig: Signal, raw: str, headline_end: int) -> bool:
     return bool(sig.leverage or sig.stop_loss or sig.take_profits or sig.risk_pct or sig.size_pct
-                or not sig.market or TRADE_MARK.search(raw))
+                or not sig.market or TRADE_MARK.search(raw, headline_end, headline_end + 12))
 
 
 def _confidence(sig: Signal, lower: str) -> None:
@@ -472,7 +472,7 @@ def parse_signals(text: str) -> List[Signal]:
     if re.search(r"\b(cancel\w*|avbryt\w*|kanseller\w*|ignore\s+(this|the)\s+(signal|trade|entry))\b", lower):
         return [Signal("cancel", symbol=_symbol(raw), notes=["cancel pending entry"])]
 
-    head_side, head_symbols = _headline(raw)
+    head_side, head_symbols, head_end = _headline(raw)
     closes = list(CLOSE_WORDS.finditer(raw))
     plans = [m for m in closes if _conditional(raw, m)]
     close = next((m for m in closes if m not in plans), None)
@@ -491,9 +491,10 @@ def parse_signals(text: str) -> List[Signal]:
     if head_symbols:
         for sym in head_symbols:
             sig = _open_details(Signal("open", symbol=sym, side=head_side), raw, lower)
-            if JOKE.search(lower) and not _has_trade_details(sig, raw):
+            if not _has_trade_details(sig, raw, head_end):
+                why = "looks like a joke/meme (😂, haha)" if JOKE.search(lower) else "chat, not a call"
                 sig = Signal("info", symbol=sym, side=head_side, notes=[
-                    "looks like a joke/meme (😂, haha) with no leverage, stop, levels or 🔼/🔽: not bought"])
+                    f"{why}: no leverage, stop, levels or 🔼/🔽 next to '{sym} {head_side}', not bought"])
             out.append(sig)
         if len(head_symbols) > 1:
             for sig in out[-len(head_symbols):]:

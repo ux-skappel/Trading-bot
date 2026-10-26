@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 
 from .analysis.support_resistance import SupportResistance, bars_from_csv_text, detect_levels
 from .app import TradingBotApp
@@ -238,6 +239,30 @@ def _print_copy_report(result) -> None:
     print("Paper only: no real orders. Past results do not guarantee future returns.")
 
 
+def _write_copy_review(result, path: Path) -> int:
+    """Every post of his with what the bot understood and did, for someone to check."""
+    lines = []
+    for o in result.posts:
+        post, sig = o.post, o.signal
+        if not post.text.strip() or (post.sell_only and sig.action == "info"):
+            continue   # bare images, and chat in the discussion topics
+        lines.append(f"--- {post.time:%Y-%m-%d %H:%M} UTC · message {post.message_id}"
+                     f"{' · reply to ' + str(post.reply_to) if post.reply_to else ''}"
+                     f"{' · discussion topic (sells only)' if post.sell_only else ''}")
+        lines.append(post.text.strip())
+        if post.image_text:
+            lines.append("[image] " + post.image_text.replace("\n", " | ")[:200])
+        lines.append(f">>> understood: {sig.summary()}" + (f"  ({'; '.join(sig.notes)})" if sig.notes else ""))
+        lines.append(f">>> bot did: {o.outcome}\n")
+    lines.append("=== Copied trades (test on old posts, every trade sized from the start amount)")
+    for t in result.trades:
+        exits = ", ".join(f"{f.reason} {f.price:g}" for f in t.fills) or "-"
+        lines.append(f"#{t.number} {t.symbol} {t.side} {t.leverage:g}x {t.status} · margin ${t.margin:,.0f} · "
+                     f"entry {t.entry_price or '-'} · exits {exits} · P/L ${t.pnl + t.unrealized:+,.2f} · {t.note}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(result.posts)
+
+
 def cmd_copy(args: argparse.Namespace) -> int:
     from .copytrade.parser import parse_signal
 
@@ -316,6 +341,25 @@ def cmd_copy(args: argparse.Namespace) -> int:
         _print_copy_report(replay(posts, feed.candles, config, max_leverage=feed.max_leverage,
                                   snapshot=feed_snapshot(feed, load_snapshots())))
         return 0
+    if args.copy_cmd == "review":
+        from .copytrade.engine import CopyConfig, feed_snapshot, replay
+        from .copytrade.prices import CandleFeed
+        from .copytrade.store import load_posts, load_snapshots
+        posts = load_posts()
+        if not posts:
+            print("No posts stored yet. Run `copy backfill` first.")
+            return 1
+        config = CopyConfig.from_settings(get_settings())
+        config.share_margin = False
+        print(f"Replaying {len(posts)} stored posts against real prices (takes a minute)...")
+        feed = CandleFeed()
+        result = replay(posts, feed.candles, config, max_leverage=feed.max_leverage,
+                        snapshot=feed_snapshot(feed, load_snapshots()))
+        path = Path(__file__).resolve().parents[1] / "review.txt"
+        _write_copy_review(result, path)
+        print(f"Wrote {path}\nIt stays on this computer (never uploaded to GitHub). "
+              "Drag it into the Claude chat to have every post checked.")
+        return 0
     if args.copy_cmd == "reset-live":
         from .copytrade.store import set_live_since
         when = set_live_since()
@@ -393,6 +437,7 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("text", nargs="+")
     rp = csub.add_parser("report", help="the live paper account (or --history: test on old posts)")
     rp.add_argument("--history", action="store_true", help="test on all his stored posts instead")
+    csub.add_parser("review", help="write review.txt: every post, what the bot understood and did")
     csub.add_parser("reset-live", help="restart the live paper account from now")
 
     return p

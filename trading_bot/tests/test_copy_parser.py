@@ -184,6 +184,15 @@ def test_real_calls_with_a_laugh_are_still_bought(text):
     assert all(s.action == "open" for s in parse_signals(text))
 
 
+@pytest.mark.parametrize("text", [
+    "God kveld! I morgen kl 21 kommer kvartalstallene for HOOD. Mange har gått HOOD short inn mot dem",
+    "Rapport i kveld, tenker å gå short HOOD etter tallene",
+    "SHORTER HOOD",
+])
+def test_chat_mentioning_a_side_is_not_a_call(text):
+    assert [s.action for s in parse_signals(text)] == ["info"]
+
+
 def test_sell_names_the_coin_he_was_long_on():
     s = parse_signal("Fin long på AMD 🔼 Selger hele nå (kan flytte SL i profitt)")
     assert (s.action, s.symbol) == ("close", "AMD")

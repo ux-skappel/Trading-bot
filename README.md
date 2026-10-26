@@ -214,6 +214,8 @@ them, and a buy seen more than `COPY_MAX_OPEN_DELAY_MINUTES` (default 2) after
 he posted is skipped. Sells and stop moves on positions you hold still happen
 when seen. `copy report` shows the live account; `copy report --history` (or
 the toggle in the tab) replays all stored posts as a clearly labelled test.
+`copy review` writes `review.txt` (git-ignored, stays on your computer): every
+post of his with what the bot understood and did, to check for misreads.
 
 **Images.** When he sells with a picture of the trade and a caption like
 "SELGER HELE NÅ", the bot reads the text in the picture with the Mac's

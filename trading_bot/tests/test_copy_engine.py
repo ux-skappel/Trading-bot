@@ -310,6 +310,19 @@ def test_sell_naming_a_coin_we_dont_hold_does_not_close_the_latest():
     assert "no AMD position was ever copied" in r.posts[-1].outcome
 
 
+def test_review_file_lists_posts_with_what_the_bot_did(tmp_path):
+    from trading_bot.main import _write_copy_review
+    data = minutes([100, 100, 102, 104])
+    posts = [post(0, "SOL LONG 🔼 Bruker 10X giring", mid=150), post(1, "", mid=151),
+             Post(152, T0 + timedelta(minutes=2), "Noen som har sett TSLA i dag?", sell_only=True)]
+    path = tmp_path / "review.txt"
+    _write_copy_review(replay(posts, source(data), FREE), path)
+    text = path.read_text(encoding="utf-8")
+    assert "SOL LONG 🔼 Bruker 10X giring" in text and ">>> bot did: #1 opened" in text
+    assert "Noen som har sett TSLA" not in text            # discussion chat is left out
+    assert "#1 SOL long 10x open" in text
+
+
 def test_sell_without_image_text_falls_back_to_latest_position():
     r = _two_open(None)
     googl, hype = r.trades
