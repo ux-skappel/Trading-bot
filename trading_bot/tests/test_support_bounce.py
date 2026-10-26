@@ -144,6 +144,24 @@ def test_trailing_stop_sells_before_it_falls_again():
     assert t.exit_price > t.entry_price
 
 
+def test_trades_keep_the_levels_seen_on_the_signal_day():
+    t = backtest_support_bounce(_candles(CYCLE * 5), "X", P).trades[0]
+    assert t.levels is not None
+    assert any(math.isclose(s.price, t.support) for s in t.levels.supports)
+    assert t.levels.resistances and t.levels.resistances[0].price > t.entry_price
+
+
+def test_trade_chart_shows_the_trade_in_context():
+    from trading_bot.dashboard.backtest_chart import trade_chart, trade_window
+
+    bars = _candles(CYCLE * 5)
+    t = backtest_support_bounce(bars, "X", P).trades[0]
+    window = trade_window(bars, t, before=5, after=3)
+    assert window[0].timestamp < t.entry_time and window[-1].timestamp > t.exit_time
+    spec = trade_chart(bars, t).to_dict()
+    assert len(spec["layer"]) > 10
+
+
 def test_too_little_data_gives_empty_result():
     r = backtest_support_bounce(_candles(CYCLE), "SHORT", P)
     assert r.trades == [] and r.total_return == 0.0 and r.win_rate is None

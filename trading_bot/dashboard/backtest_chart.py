@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import List
 
 import altair as alt
 import pandas as pd
 
-from ..analysis.support_resistance import Bar
-from ..backtesting.support_bounce import BounceResult
-from .sr_chart import CANDLE, LABEL_INK, RESISTANCE, SUPPORT
+from ..analysis.support_resistance import Bar, SupportResistance
+from ..backtesting.support_bounce import BounceResult, BounceTrade
+from .sr_chart import CANDLE, LABEL_INK, RESISTANCE, SUPPORT, _fmt, sr_layers
 
 WIN, LOSS = SUPPORT, RESISTANCE          # same CVD-safe blue/red pair
 SURFACE = {"light": "#ffffff", "dark": "#0e1117"}
 
 TRADE_COLUMNS = [
-    "entry_time", "entry_price", "exit_time", "exit_price", "return_pct",
+    "symbol", "entry_time", "entry_price", "exit_time", "exit_price", "return_pct",
     "exit_reason", "days", "size", "support", "stop", "target", "outcome",
 ]
 
@@ -23,6 +24,7 @@ TRADE_COLUMNS = [
 def trades_frame(result: BounceResult) -> pd.DataFrame:
     rows = [
         {
+            "symbol": t.symbol,
             "entry_time": t.entry_time,
             "entry_price": t.entry_price,
             "exit_time": t.exit_time,
@@ -144,3 +146,96 @@ def equity_chart(result: BounceResult, theme: str = "light", height: int = 280) 
                 ).encode(x="timestamp:T", y="value:Q", text="label:N")
             )
     return alt.layer(*layers).properties(height=height)
+
+
+EXIT_LABEL = {
+    "stop": "stop loss", "trail": "trailing stop", "target": "target",
+    "time": "time stop", "liquidated": "liquidated", "end_of_data": "still open",
+}
+
+
+def trade_window(bars: List[Bar], trade: BounceTrade, before: int = 30, after: int = 15) -> List[Bar]:
+    """Candles from ``before`` days ahead of the buy to ``after`` days past the sell."""
+    index = {b.timestamp: i for i, b in enumerate(bars)}
+    start = max(0, index[trade.entry_time] - before)
+    end = min(len(bars), index[trade.exit_time] + after + 1)
+    return bars[start:end]
+
+
+def trade_chart(
+    bars: List[Bar], trade: BounceTrade, theme: str = "light", height: int = 440
+) -> alt.LayerChart:
+    """One trade in context: candles before, during and after it, every
+    support/resistance level the bot saw on the signal day, the holding
+    period, the stop and target, and the buy and sell."""
+    window = trade_window(bars, trade)
+    levels = trade.levels or SupportResistance(trade.symbol, trade.entry_price, 0.0)
+    ink = LABEL_INK.get(theme, LABEL_INK["light"])
+    surface = SURFACE.get(theme, SURFACE["light"])
+    half_day = timedelta(hours=12)
+    start, end = trade.entry_time - half_day, trade.exit_time + half_day
+
+    held = alt.Chart(pd.DataFrame([{"start": start, "end": end}])).mark_rect(
+        color=CANDLE, opacity=0.15
+    ).encode(x="start:T", x2="end:T")
+
+    def plan_line(price: float, color: str, label: str) -> List[alt.Chart]:
+        data = pd.DataFrame([{"start": start, "end": end, "price": price, "label": label}])
+        line = alt.Chart(data).mark_rule(color=color, strokeWidth=2).encode(
+            x="start:T", x2="end:T", y="price:Q",
+            tooltip=[alt.Tooltip("label:N", title=" "),
+                     alt.Tooltip("price:Q", title="Price", format=",.4~f")],
+        )
+        text = alt.Chart(data).mark_text(
+            align="right", baseline="middle", dx=-6, color=ink
+        ).encode(x="start:T", y="price:Q", text="label:N")
+        return [line, text]
+
+    marks = pd.DataFrame([
+        {"time": trade.entry_time, "price": trade.entry_price, "kind": "Buy", "label": "Buy"},
+        {"time": trade.exit_time, "price": trade.exit_price, "kind": "Sell", "label": "Sell"},
+    ])
+    tooltip = [alt.Tooltip("kind:N", title=" "), alt.Tooltip("time:T", title="Date"),
+               alt.Tooltip("price:Q", title="Price", format=",.4~f")]
+    buy = alt.Chart(marks).transform_filter("datum.kind === 'Buy'").mark_point(
+        shape="triangle-up", filled=True, size=160, opacity=1, color=ink, stroke=surface, strokeWidth=2
+    ).encode(x="time:T", y="price:Q", tooltip=tooltip)
+    sell = alt.Chart(marks).transform_filter("datum.kind === 'Sell'").mark_point(
+        shape="triangle-down", filled=True, size=160, opacity=1, color=ink, stroke=surface, strokeWidth=2
+    ).encode(x="time:T", y="price:Q", tooltip=tooltip)
+    # Stop/Target left of the shaded period, Buy above its marker, Sell to the
+    # right of its marker: stays readable when the trade's prices sit close.
+    buy_label = alt.Chart(marks).transform_filter("datum.kind === 'Buy'").mark_text(
+        align="center", baseline="bottom", dy=-12, color=ink, fontWeight="bold"
+    ).encode(x="time:T", y="price:Q", text="label:N")
+    sell_label = alt.Chart(marks).transform_filter("datum.kind === 'Sell'").mark_text(
+        align="left", baseline="middle", dx=12, color=ink, fontWeight="bold"
+    ).encode(x="time:T", y="price:Q", text="label:N")
+
+    layers = [held] + sr_layers(window, levels, theme)
+    layers += plan_line(trade.stop, RESISTANCE, "Stop")
+    layers += plan_line(trade.target, SUPPORT, "Target")
+    layers += [buy, sell, buy_label, sell_label]
+    return alt.layer(*layers).properties(height=height)
+
+
+def trade_summary(bars: List[Bar], trade: BounceTrade) -> str:
+    """One line with the numbers behind a trade chart, incl. what happened after the sell."""
+    move = trade.exit_price / trade.entry_price - 1
+    days = f"{trade.days_held} day{'s' if trade.days_held != 1 else ''}"
+    parts = [
+        f"Bought {trade.entry_time:%Y-%m-%d} at {_fmt(trade.entry_price)}",
+        f"sold {trade.exit_time:%Y-%m-%d} at {_fmt(trade.exit_price)} "
+        f"({EXIT_LABEL[trade.exit_reason]}, {days})",
+        f"price {move:+.1%}, account {trade.return_pct:+.2%} at {trade.position_size:.2f}x",
+        f"stop {_fmt(trade.stop)}, target {_fmt(trade.target)}",
+    ]
+    index = {b.timestamp: i for i, b in enumerate(bars)}
+    exit_i = index[trade.exit_time]
+    after = [
+        f"{n} days later {bars[exit_i + n].close / trade.exit_price - 1:+.1%}"
+        for n in (5, 15) if exit_i + n < len(bars)
+    ]
+    if after:
+        parts.append("after the sell: " + ", ".join(after))
+    return " · ".join(parts)

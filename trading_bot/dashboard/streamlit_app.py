@@ -24,7 +24,14 @@ from trading_bot.app import TradingBotApp
 from trading_bot.backtesting.support_bounce import BounceParams, backtest_support_bounce, summarize
 from trading_bot.config import get_settings
 from trading_bot.connectors.market_data import MarketDataProvider, infer_asset_class
-from trading_bot.dashboard.backtest_chart import equity_chart, trades_chart, trades_frame
+from trading_bot.dashboard.backtest_chart import (
+    EXIT_LABEL,
+    equity_chart,
+    trade_chart,
+    trade_summary,
+    trades_chart,
+    trades_frame,
+)
 from trading_bot.dashboard.sr_chart import levels_frame, sr_chart
 from trading_bot.storage.database import init_db, session_scope
 from trading_bot.storage.models import (
@@ -251,28 +258,54 @@ with tab_strategy:
             use_container_width=True,
         )
 
+        trade_table_config = {
+            "return_pct": st.column_config.NumberColumn("return", format="%+.2f%%"),
+            "entry_time": st.column_config.DateColumn("bought", format="YYYY-MM-DD"),
+            "entry_price": "buy price",
+            "exit_time": st.column_config.DateColumn("sold", format="YYYY-MM-DD"),
+            "exit_price": "sell price",
+            "exit_reason": "exit",
+            "days": "days held",
+            "size": st.column_config.NumberColumn(
+                "size", format="%.2fx", help="Position as a multiple of the account"),
+            "outcome": None,
+        }
+
+        st.markdown("#### All buys and sells")
+        all_trades = pd.concat([trades_frame(r) for r in results]).sort_values("entry_time")
+        st.dataframe(all_trades, column_config=trade_table_config, hide_index=True,
+                     use_container_width=True, height=360)
+        st.download_button(
+            "Download all trades (CSV for Excel)",
+            all_trades.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+            file_name="all_trades.csv",
+            mime="text/csv",
+        )
+
+        st.markdown("#### One symbol")
         pick = st.selectbox("Show trades for", list(overview["symbol"]))
         pick_bars, pick_result, _ = runs[pick]
         st.altair_chart(trades_chart(pick_bars, pick_result, theme=_theme()),
                         use_container_width=True)
         st.altair_chart(equity_chart(pick_result, theme=_theme()), use_container_width=True)
-        st.dataframe(
-            trades_frame(pick_result),
-            column_config={
-                "return_pct": st.column_config.NumberColumn("return", format="%+.2f%%"),
-                "entry_time": st.column_config.DateColumn("bought", format="YYYY-MM-DD"),
-                "entry_price": "buy price",
-                "exit_time": st.column_config.DateColumn("sold", format="YYYY-MM-DD"),
-                "exit_price": "sell price",
-                "exit_reason": "exit",
-                "days": "days held",
-                "size": st.column_config.NumberColumn(
-                    "size", format="%.2fx", help="Position as a multiple of the account"),
-                "outcome": None,
-            },
-            hide_index=True,
-            use_container_width=True,
-        )
+        st.dataframe(trades_frame(pick_result), column_config=trade_table_config,
+                     hide_index=True, use_container_width=True)
+
+        if pick_result.trades:
+            st.markdown("#### One trade up close")
+            labels = [
+                f"{t.entry_time:%Y-%m-%d} · {t.return_pct:+.2%} · {EXIT_LABEL[t.exit_reason]}"
+                for t in pick_result.trades
+            ]
+            chosen = st.selectbox("Trade", range(len(labels)), format_func=lambda i: labels[i])
+            trade = pick_result.trades[chosen]
+            st.markdown(trade_summary(pick_bars, trade))
+            st.altair_chart(trade_chart(pick_bars, trade, theme=_theme()), use_container_width=True)
+            st.caption(
+                "30 days before the buy to 15 days after the sell. Shaded: days in the trade. "
+                "Dashed lines: every support and resistance the bot saw the day before it bought. "
+                "Solid lines: the stop loss and target for this trade."
+            )
 
 with tab_levels:
     st.subheader("Support & resistance")

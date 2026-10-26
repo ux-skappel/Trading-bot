@@ -53,7 +53,13 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from ..analysis.support_resistance import Bar, average_true_range, detect_levels, suggest_stop_take
+from ..analysis.support_resistance import (
+    Bar,
+    SupportResistance,
+    average_true_range,
+    detect_levels,
+    suggest_stop_take,
+)
 
 # Below 1% of the starting money (e.g. under $10 of $1,000 — Liquid's minimum
 # position) the account can't trade any more and counts as wiped out.
@@ -112,6 +118,7 @@ class BounceTrade:
     exit_reason: str        # stop | trail | target | time | liquidated | end_of_data
     return_pct: float       # on your own money: after leverage, fees and funding
     days_held: int          # 1 = sold the same day it was bought
+    levels: Optional[SupportResistance] = None   # all levels as seen on the signal day
 
 
 @dataclass
@@ -165,6 +172,7 @@ class _Signal:
     support: float
     touches: int
     atr: float
+    levels: SupportResistance
 
 
 @dataclass
@@ -203,7 +211,7 @@ def _find_signal(bars: List[Bar], t: int, p: BounceParams) -> Optional[_Signal]:
     if plan.stop_level is None or plan.reward_risk is None or plan.reward_risk < p.min_reward_risk:
         return None
     return _Signal(plan.stop_loss, plan.take_profit, support.price, support.touches,
-                   average_true_range(window))
+                   average_true_range(window), sr)
 
 
 def _position_size(p: BounceParams, entry: float, stop: float) -> float:
@@ -250,6 +258,7 @@ def backtest_support_bounce(
             exit_reason=reason,
             return_pct=ret,
             days_held=days,
+            levels=s.levels,
         ))
         position = None
 

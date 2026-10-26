@@ -69,7 +69,12 @@ def _labelled(levels: pd.DataFrame, y_range: float) -> pd.DataFrame:
 def sr_chart(
     bars: List[Bar], sr: SupportResistance, height: int = 420, theme: str = "light"
 ) -> alt.LayerChart:
-    """Candles plus one dashed, labelled line per support/resistance level.
+    """Candles plus one dashed, labelled line per support/resistance level."""
+    return alt.layer(*sr_layers(bars, sr, theme)).properties(height=height)
+
+
+def sr_layers(bars: List[Bar], sr: SupportResistance, theme: str = "light") -> List[alt.Chart]:
+    """Chart layers for candles and levels, for building on in other charts.
 
     Resistance labels sit above their line and support labels below, so a
     support just under a resistance doesn't overprint it.
@@ -136,7 +141,5 @@ def sr_chart(
     # Invisible wide rule so level tooltips don't need pixel-perfect hovering.
     level_hit = level_base.mark_rule(strokeWidth=12, opacity=0.001).encode(tooltip=level_tooltip)
 
-    return alt.layer(
-        upper_wick, lower_wick, body, lines, resistance_labels, support_labels,
-        crosshair, level_hit,
-    ).properties(height=height)
+    return [upper_wick, lower_wick, body, lines, resistance_labels, support_labels,
+            crosshair, level_hit]
