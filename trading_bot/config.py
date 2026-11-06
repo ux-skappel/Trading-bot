@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -102,6 +102,9 @@ class Settings:
     copy_size_risky: float = field(default_factory=lambda: float(_str("COPY_SIZE_RISKY", "0.5")))
     copy_size_strong: float = field(default_factory=lambda: float(_str("COPY_SIZE_STRONG", "1.5")))
     copy_withdraw_monthly: bool = field(default_factory=lambda: _bool("COPY_WITHDRAW_MONTHLY", True))
+    copy_risk_at_stop_pct: Optional[float] = field(
+        default_factory=lambda: float(_str("COPY_RISK_AT_STOP_PCT")) if _str("COPY_RISK_AT_STOP_PCT") else None)
+    copy_max_margin_pct: float = field(default_factory=lambda: float(_str("COPY_MAX_MARGIN_PCT", "0.25")))
 
     # --- Storage ---
     database_url: str = field(

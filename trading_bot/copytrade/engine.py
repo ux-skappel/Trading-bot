@@ -82,6 +82,10 @@ class CopyConfig:
     size_very_risky: float = 0.25
     size_risky: float = 0.5
     size_strong: float = 1.5
+    # With his SL: size so that hitting it loses this share of the account (x his tone), e.g. 0.02.
+    # None: always use default_margin_pct. Never more than max_margin_pct of the account as margin.
+    risk_at_stop_pct: Optional[float] = None
+    max_margin_pct: float = 0.25
     # Sizes are always a share of the account as it stands (start + realized P/L), so
     # gains make the next trade bigger and losses smaller. True: open positions also
     # need free margin (live). False: they never block a later call, so a position
@@ -103,6 +107,8 @@ class CopyConfig:
             size_risky=settings.copy_size_risky,
             size_strong=settings.copy_size_strong,
             withdraw_monthly=settings.copy_withdraw_monthly,
+            risk_at_stop_pct=settings.copy_risk_at_stop_pct,
+            max_margin_pct=settings.copy_max_margin_pct,
         )
 
     def confidence_scale(self, confidence: str) -> float:
@@ -333,13 +339,20 @@ class CopyEngine:
         elif sig.size_pct:
             notional = sig.size_pct * equity * lev
             how = f"size {sig.size_pct:.2%}"
-        else:  # no size in his post: his tone decides (his own risk/size % already does)
-            notional = self.cfg.default_margin_pct * equity * lev
-            how = f"default {self.cfg.default_margin_pct:.0%} margin"
+        else:  # no size in his post: his SL (if set up) and his tone decide
+            if self.cfg.risk_at_stop_pct and trade.stop:
+                notional = self.cfg.risk_at_stop_pct * equity / (abs(price - trade.stop) / price)
+                how = f"risk {self.cfg.risk_at_stop_pct:.1%} at his SL"
+            else:
+                notional = self.cfg.default_margin_pct * equity * lev
+                how = f"default {self.cfg.default_margin_pct:.0%} margin"
             tone = self.cfg.confidence_scale(sig.confidence)
             if tone != 1.0:
                 notional *= tone
                 how += f" x {tone:.0%} ({sig.confidence.replace('_', ' ')})"
+            if notional / lev > self.cfg.max_margin_pct * equity:   # a very tight SL
+                notional = self.cfg.max_margin_pct * equity * lev
+                how += f", capped at {self.cfg.max_margin_pct:.0%} margin"
         if sig.size_scale != 1.0:
             notional *= sig.size_scale
             how += f" x {sig.size_scale:.0%}"

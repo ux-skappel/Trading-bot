@@ -548,3 +548,13 @@ def test_old_calls_use_the_entry_on_his_reply_card():
     assert replay(posts, source(data), FREE).trades[0].entry_price == 99.5
     live = CopyConfig(fee_pct=0, funding_pct_per_day=0, live_since=T0)
     assert replay(posts, source(data), live).trades[0].entry_price == 100   # live: the price when seen
+
+
+def test_optional_size_by_risk_at_his_stop():
+    data = minutes([100, 100, 101, 102])
+    p = [post(0, "SOL LONG 🔼 Bruker 10X giring og SL på $98")]           # 2% below the entry
+    t = replay(p, source(data), CopyConfig(fee_pct=0, funding_pct_per_day=0, risk_at_stop_pct=0.02)).trades[0]
+    assert t.notional == pytest.approx(0.02 * 10_000 / 0.02)              # a stop-out loses $200
+    tight = [post(0, "SOL LONG 🔼 Bruker 10X giring og SL på $99,9")]      # 0.1%: capped at 25% margin
+    t = replay(tight, source(data), CopyConfig(fee_pct=0, funding_pct_per_day=0, risk_at_stop_pct=0.02)).trades[0]
+    assert t.margin == pytest.approx(2_500) and "capped at 25% margin" in t.note
