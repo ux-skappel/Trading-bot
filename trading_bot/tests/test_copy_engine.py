@@ -558,3 +558,36 @@ def test_optional_size_by_risk_at_his_stop():
     tight = [post(0, "SOL LONG 🔼 Bruker 10X giring og SL på $99,9")]      # 0.1%: capped at 25% margin
     t = replay(tight, source(data), CopyConfig(fee_pct=0, funding_pct_per_day=0, risk_at_stop_pct=0.02)).trades[0]
     assert t.margin == pytest.approx(2_500) and "capped at 25% margin" in t.note
+
+
+def test_planned_call_buys_at_his_clock_time_and_a_repost_is_not_bought_twice():
+    # Winter: Norwegian time is UTC+1, so "kl 14:00" is 13:00 UTC.
+    data = hours([(100, 101, 99, 100), (100, 102, 99.5, 101), (105, 106, 104, 105.5), (106, 109, 105, 108),
+                  (108, 110, 107, 109)], symbol="META")
+    posts = [Post(1, T0 + timedelta(minutes=5), "META LONG 🔼 Bruker 10X giring kl 14:00, ingen SL"),
+             Post(2, T0 + timedelta(minutes=55), "META LONG 🔼 Bruker 10X giring"),        # same call again
+             Post(3, T0 + timedelta(hours=3, minutes=30), "SOLGT HELE NÅ", reply_to=1)]
+    r = replay(posts, source(data), FREE, now=T0 + timedelta(hours=5))
+    assert len(r.trades) == 1
+    t = r.trades[0]
+    assert t.entry_time == T0 + timedelta(hours=1) and t.entry_price == 100     # the 13:00 UTC open
+    assert "not bought twice" in r.posts[1].outcome
+    assert t.status == "closed" and t.fills[-1].reason == "his close"
+
+
+def test_planned_call_is_cancelled_when_he_sells_before_it():
+    data = hours([(100, 101, 99, 100)] * 4, symbol="META")
+    posts = [Post(1, T0 + timedelta(minutes=5), "META LONG 🔼 Bruker 10X giring kl 15:00"),
+             Post(2, T0 + timedelta(minutes=30), "Selger hele nå", reply_to=1)]
+    t = replay(posts, source(data), FREE, now=T0 + timedelta(hours=4)).trades[0]
+    assert t.status == "cancelled" and t.entry_price is None
+
+
+def test_planned_call_bought_and_sold_inside_one_hour():
+    # Planned "kl 14:00" (13:00 UTC); he sells at 13:05, before the hourly candle has ended.
+    data = hours([(100, 101, 99, 100), (100, 106, 99.5, 105), (105, 106, 104, 105.5)], symbol="META")
+    posts = [Post(1, T0 + timedelta(minutes=5), "META LONG 🔼 Bruker 10X giring kl 14:00"),
+             Post(2, T0 + timedelta(hours=1, minutes=5), "SOLGT HELE NÅ 🔼", reply_to=1,
+                  image_text="• Liquid | META | PERP 10x LONG | CURRENT RETURN | +40% | ENTRY | $100,50 | MARK | $104,50")]
+    t = replay(posts, source(data), FREE, now=T0 + timedelta(hours=3)).trades[0]
+    assert t.status == "closed" and t.entry_price == 100.5 and t.fills[-1].price == 104.5

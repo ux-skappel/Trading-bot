@@ -231,10 +231,12 @@ save time); replies to images are still followed back to the original trade
 post. `copy images` shows what was read.
 
 **Not copied:** status updates ("fortsatt long", "for øyeblikket
-long"), plans ("selger ved $X", "tror jeg selger i kveld", "går inn
-kl 21:58"), anything about his SizeProp/prop accounts, candle talk
+long"), plans ("selger ved $X", "tror jeg selger i kveld"), anything about his SizeProp/prop accounts, candle talk
 ("1h close"), memes, and chat that mentions long/short without a call.
-**Copied too:** calls written out in words (a company named in the post plus
+**Planned calls** ("bruker 10X giring kl 21:59", "går inn i trades kl
+20:59" + "i morgen") wait and buy at that Norwegian time; if he posts the same
+call again shortly before, it is not bought twice, and a sell before the time
+cancels it. **Copied too:** calls written out in words (a company named in the post plus
 "går long med 10X giring"), several calls in one sentence ("long A og B +
 short C"), adds ("longet mer", which take the coin and
 leverage from the post he replied to), a stop move per coin line, and a sell

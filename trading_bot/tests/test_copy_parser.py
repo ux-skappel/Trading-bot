@@ -345,14 +345,19 @@ def test_more_status_updates(text):
     assert all(s.action == "info" for s in parse_signals(text))
 
 
-@pytest.mark.parametrize("text,action", [
-    ("META LONG 🔼\n\nBruker 15X giring kl 21:58, ingen SL", "info"),
-    ("Går inn i begge kl 21:58\n\nApple short 🔽", "info"),
-    ("ASML LONG 🔼\n\nTall kl 08:00 i morgen\n\n10X giring, ingen SL", "open"),
-    ("AMAZON LONG 🔼\n\nBruker 10X giring og ingen SL ennå (SL kommer i morgen før kl 15:30)", "open"),
+@pytest.mark.parametrize("text,at_time", [
+    ("META LONG 🔼\n\nBruker 15X giring kl 21:58, ingen SL", (0, 21, 58)),
+    ("Rapport i morgen\n\nGår inn i begge kl 21:58\n\nApple short 🔽", (1, 21, 58)),
+    ("ASML LONG 🔼\n\nTall kl 08:00 i morgen\n\n10X giring, ingen SL", None),     # the report's time
+    ("AMAZON LONG 🔼\n\nBruker 10X giring og ingen SL ennå (SL kommer i morgen før kl 15:30)", None),
 ])
-def test_a_later_entry_time_is_a_plan(text, action):
-    assert parse_signal(text).action == action
+def test_a_planned_entry_time_is_kept(text, at_time):
+    s = parse_signal(text)
+    assert (s.action, s.at_time) == ("open", at_time)
+
+
+def test_seagate_is_the_stock():
+    assert parse_signal("Seagate long 🔼 Bruker 10X giring").symbol == "STX"
 
 
 def test_several_calls_in_one_sentence():

@@ -39,12 +39,27 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from ..analysis.support_resistance import Bar
 from .images import Card, cards as image_cards, chart_symbol
 from .parser import Signal, image_symbols, parse_signals
+
+
+OSLO = ZoneInfo("Europe/Oslo")   # he writes clock times ("kl 21:59") in Norwegian time
+
+
+def _oslo(t: datetime) -> datetime:
+    return t.replace(tzinfo=timezone.utc).astimezone(OSLO)
+
+
+def _planned_utc(posted: datetime, at_time: Tuple[int, int, int]) -> datetime:
+    """'kl 20:59' (Norwegian time), 'i morgen' -> the UTC moment to buy."""
+    days, hour, minute = at_time
+    local = (_oslo(posted) + timedelta(days=days)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _rescale(level: Optional[float], price: Optional[float]) -> Optional[float]:
@@ -149,7 +164,8 @@ class CopyTrade:
     signal: Signal
     posted_at: datetime
     leverage: float
-    status: str = "pending"          # pending | open | closed | cancelled | expired | skipped
+    status: str = "pending"          # pending | scheduled | open | closed | cancelled | expired | skipped
+    start_at: Optional[datetime] = None   # scheduled: when his planned entry ("kl 21:59") is due (UTC)
     his_entry: Optional[float] = None
     limit_price: Optional[float] = None
     entry_time: Optional[datetime] = None
@@ -381,7 +397,7 @@ class CopyEngine:
         i = self._cursor.get(trade.number, 0)
         # Only candles that ended by ``until``: a candle still forming may make its high/low
         # after a post at ``until`` (e.g. his stop move at 13:17 inside the 13:00 hour).
-        while i < len(bars) and bars[i].timestamp + step <= until and trade.status in ("pending", "open"):
+        while i < len(bars) and bars[i].timestamp + step <= until and trade.status in ("pending", "scheduled", "open"):
             self._step(trade, bars[i])
             i += 1
         self._cursor[trade.number] = i
@@ -389,6 +405,14 @@ class CopyEngine:
     def _step(self, trade: CopyTrade, bar: Bar) -> None:
         d = trade.direction
         filled_now = False
+        if trade.status == "scheduled":   # his "kl 21:59": buy at the first price from then on
+            if bar.timestamp < trade.start_at:
+                return
+            self._open(trade, bar.timestamp, bar.open)
+            trade.his_entry = bar.open
+            filled_now = True
+            if trade.status != "open":
+                return
         if trade.status == "pending":
             if bar.timestamp - trade.posted_at > timedelta(hours=self.cfg.entry_timeout_hours):
                 trade.status = "expired"
@@ -457,7 +481,7 @@ class CopyEngine:
     # --- posts ----------------------------------------------------------------
 
     def _active(self) -> List[CopyTrade]:
-        return [t for t in self.trades if t.status in ("pending", "open")]
+        return [t for t in self.trades if t.status in ("pending", "scheduled", "open")]
 
     def _link(self, message_id: int, trade: CopyTrade) -> None:
         linked = self.by_message.setdefault(message_id, [])
@@ -541,6 +565,7 @@ class CopyEngine:
         self._withdraw_until(at)
         for trade in self._active():
             self._advance(trade, at)
+            self._fill_due(trade, at)
         late = (at - post.time).total_seconds() / 60
         if not post.text.strip():
             seen = f": {post.image_text[:80]!r}" if post.image_text else ""
@@ -552,7 +577,7 @@ class CopyEngine:
                 self.outcomes.append(PostOutcome(post, sig, "discussion topic: only his sells and stop "
                                                             "updates count here, not bought"))
                 continue
-            if sig.action == "open" and late > self.cfg.max_open_delay_minutes:
+            if sig.action == "open" and late > self.cfg.max_open_delay_minutes and not sig.at_time:
                 outcome = (f"missed: seen {late:.1f} min after he posted (limit "
                            f"{self.cfg.max_open_delay_minutes:g} min), not bought")
             else:
@@ -565,14 +590,14 @@ class CopyEngine:
         if sig.action == "open":
             return self._apply_open(post, sig)
         if sig.action == "cancel":
-            pending, how = self._targets_for(post, sig, ("pending",))
+            pending, how = self._targets_for(post, sig, ("pending", "scheduled"))
             for t in pending:
                 t.status, t.note = "cancelled", "cancelled by his post"
                 self._link(post.message_id, t)
             return f"cancelled {', '.join(f'#{t.number}' for t in pending)}" if pending else "nothing pending to cancel"
         trades, how = self._targets_for(post, sig, ("open",))
         if not trades:
-            pending, _ = self._targets_for(post, sig, ("pending",))
+            pending, _ = self._targets_for(post, sig, ("pending", "scheduled"))
             if sig.action == "close" and pending:
                 for t in pending:
                     t.status, t.note = "cancelled", "he closed before our entry filled"
@@ -660,6 +685,37 @@ class CopyEngine:
         i = self._index_at(symbol, t)
         return self._bars[symbol][i].timestamp if i is not None else t
 
+    def _fill_due(self, trade: CopyTrade, at: datetime) -> None:
+        """A planned buy whose time has come although its candle hasn't ended yet: buy at that time's price."""
+        if trade.status != "scheduled" or trade.start_at > at:
+            return
+        bars, stamps = self._bars[trade.symbol], self._stamps[trade.symbol]
+        j = bisect.bisect_right(stamps, trade.start_at) - 1           # the candle running at start_at
+        nxt = j + 1 if j + 1 < len(bars) and bars[j + 1].timestamp <= at else None
+        price = bars[nxt].open if nxt is not None and bars[nxt].timestamp - trade.start_at < timedelta(minutes=5) \
+            else (bars[j].close if j >= 0 else None)
+        card = _rescale(self.reply_entries.get((trade.message_id, trade.symbol, trade.side)), price)
+        if card and price and abs(card / price - 1) < 0.15:            # old posts: his fill on his card
+            price = card
+        if price is None:
+            return
+        self._open(trade, trade.start_at, price)
+        trade.his_entry = price
+        self._cursor[trade.number] = bisect.bisect_left(stamps, trade.start_at)
+
+    def _schedule(self, trade: CopyTrade, post: Post, start: datetime) -> str:
+        """Wait for his planned entry time; buy then at the market price."""
+        bars, sig = self._bars[trade.symbol], trade.signal
+        i = self._index_at(trade.symbol, post.time)
+        self._cursor[trade.number] = len(bars) if i is None else i
+        ref = bars[i].open if i is not None else bars[-1].close
+        trade.stop = trade.initial_stop = _rescale(sig.stop_loss, ref)
+        trade.targets = [_rescale(tp, ref) for tp in sig.take_profits]
+        trade.start_at, trade.status = start, "scheduled"
+        when = _oslo(start)
+        trade.note = f"planned: buys at {when:%H:%M} Norwegian time ({when:%d.%m})"
+        return f"#{trade.number} {trade.note}"
+
     def _resolve_add(self, post: Post, sig: Signal) -> Tuple[Optional[Signal], str]:
         """'Longet mer' (reply) / 'Longer mer TESLA': the coin and his leverage come from that position."""
         linked = self._linked_trades(post) or []
@@ -678,6 +734,12 @@ class CopyEngine:
             sig, why = self._resolve_add(post, sig)
             if sig is None:
                 return why
+        planned = next((t for t in self.trades if t.start_at and t.symbol == sig.symbol and t.side == sig.side
+                        and t.status in ("scheduled", "open") and abs(t.start_at - post.time) < timedelta(hours=6)), None)
+        if planned and not sig.add:   # he posts the same call again right before his planned entry
+            self._link(post.message_id, planned)
+            return (f"same call as #{planned.number} (planned for {_oslo(planned.start_at):%H:%M} Norwegian time): "
+                    "not bought twice")
         card = next((c for c in image_cards(post.image_text) if c.symbol == sig.symbol and c.side == sig.side), None)
         if sig.leverage is None and card and card.leverage:   # "Velger long META" + his 20x card
             sig = replace(sig, leverage=card.leverage, notes=sig.notes + [f"{card.leverage:g}x from his trade card"])
@@ -696,6 +758,14 @@ class CopyEngine:
         if not self._load(sig.symbol, post.time):
             trade.status, trade.note = "skipped", f"no price data for {sig.symbol}"
             return f"#{number} skipped: no price data for {sig.symbol}"
+        if sig.at_time:
+            start = _planned_utc(post.time, sig.at_time)
+            if start > post.time:
+                return self._schedule(trade, post, start)
+            if post.time - start > timedelta(minutes=self.cfg.max_open_delay_minutes):
+                trade.status = "skipped"
+                trade.note = f"planned for {_oslo(start):%H:%M} Norwegian time, seen too late"
+                return f"#{number} not bought: {trade.note}"
         i = self._index_at(sig.symbol, post.time)
         if i is None:
             trade.status, trade.note = "skipped", "post is newer than the price data"

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 NUM = r"\d+(?:[.,]\d+)*"
 
@@ -25,7 +25,7 @@ KNOWN_COINS = {
     "BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "AVAX", "LINK", "BNB", "TON", "TRX", "DOT",
     "POL", "MATIC", "LTC", "BCH", "SHIB", "PEPE", "WIF", "BONK", "SUI", "APT", "ARB", "OP",
     "INJ", "TIA", "SEI", "NEAR", "ATOM", "FIL", "HBAR", "ICP", "RENDER", "RNDR", "FET", "TAO",
-    "HYPE", "ENA", "ONDO", "JUP", "PYTH", "WLD", "STX", "IMX", "AAVE", "UNI", "MKR", "LDO",
+    "HYPE", "ENA", "ONDO", "JUP", "PYTH", "WLD", "IMX", "AAVE", "UNI", "MKR", "LDO",
     "CRV", "RUNE", "KAS", "FTM", "XLM", "ETC", "ORDI", "TRUMP", "FARTCOIN", "POPCAT", "MEW",
     "PENGU", "VIRTUAL", "KAITO", "BERA", "XMR", "ZEC", "ALGO", "GALA", "SAND", "MANA", "APE",
     "DYDX", "GMX", "PENDLE", "EIGEN", "ZRO", "STRK", "BLUR", "JTO", "BOME",
@@ -44,7 +44,7 @@ NAMES = {
     "AMAZON": "AMZN", "MICROSOFT": "MSFT", "FACEBOOK": "META", "NETFLIX": "NFLX",
     "ROBINHOOD": "HOOD", "COINBASE": "COIN", "MICROSTRATEGY": "MSTR", "STRATEGY": "MSTR",
     "PALANTIR": "PLTR", "INTEL": "INTC", "SANDISK": "SNDK", "REDDIT": "RDDT", "BLOOM": "BE",
-    "WESTERN": "WDC", "MICRON": "MU", "BROADCOM": "AVGO", "ORACLE": "ORCL", "SPACEX": "SPCX",
+    "WESTERN": "WDC", "MICRON": "MU", "BROADCOM": "AVGO", "ORACLE": "ORCL", "SPACEX": "SPCX", "SEAGATE": "STX",
     "ANTHROPIC": "ANT", "COSTCO": "COST", "RIVIAN": "RIVN", "ALIBABA": "BABA",
     "GAMESTOP": "GME", "SAMSUNG": "SMSN", "HYNIX": "SKHX", "TSMC": "TSM", "CIRCLE": "CRCL",
     "GULL": "GOLD", "SØLV": "SILVER", "SOLV": "SILVER", "OLJE": "CL", "OIL": "CL",
@@ -95,6 +95,7 @@ class Signal:
     size_scale: float = 1.0              # "in with 33% of the full position" -> 0.33
     confidence: str = "normal"           # very_risky | risky | normal | strong (from his wording)
     add: bool = False                    # "longer mer": adds to his position (symbol may come from a reply)
+    at_time: Optional[Tuple[int, int, int]] = None   # "kl 21:59" (Norwegian time): (days ahead, hour, minute)
     close_fraction: float = 1.0          # for close: share of the position to close
     new_stop: Optional[float] = None     # for move_sl
     stop_to_entry: bool = False          # for move_sl: break-even
@@ -124,6 +125,9 @@ class Signal:
                 parts.append(f"{self.size_scale:.0%} of normal size")
             if self.confidence != "normal":
                 parts.append(CONFIDENCE_LABELS[self.confidence])
+            if self.at_time:
+                days, hour, minute = self.at_time
+                parts.append(f"buys at {hour:02d}:{minute:02d} Norwegian time" + (" tomorrow" if days else ""))
             return " · ".join(parts)
         if self.action == "close":
             what = "all" if self.close_fraction >= 1 else f"{self.close_fraction:.0%}"
@@ -597,9 +601,9 @@ def _prose_call(raw: str, lower: str) -> Optional[Signal]:
     ups, downs = sum(raw.count(c) for c in "🔼📈"), sum(raw.count(c) for c in "🔽📉")
     if m:
         side = m.group(1).lower()
-    elif ups and not downs and re.search(r"\b(?:opp|up|pump\w*)\b", lower):
-        side = "long"
-    elif downs and not ups and re.search(r"\b(?:ned|down|dump\w*)\b", lower):
+    elif ups and not downs and re.search(r"\b(?:opp|up|pump\w*|bruker\s+\d{1,3}\s*x)\b", lower):
+        side = "long"   # "… 🔼 … Bruker 10X giring": his arrows give the direction
+    elif downs and not ups and re.search(r"\b(?:ned|down|dump\w*|bruker\s+\d{1,3}\s*x)\b", lower):
         side = "short"
     else:
         return None
@@ -641,6 +645,24 @@ def _moves(raw: str, lower: str) -> List[Signal]:
         sig.notes.append(f"new stop {sig.new_stop:g}")
         return [sig]
     return [Signal("info", notes=["mentions the stop but no new level found"])]
+
+
+def _planned_time(raw: str, future: Optional[re.Match]) -> Optional[Tuple[int, int, int]]:
+    """'går inn i trades kl 20:59' (+ 'i morgen') -> (1, 20, 59); None when no clock time is given."""
+    if not future:
+        return None
+    at = re.compile(r"\bkl\.?\s*(\d{1,2})(?:[:.](\d{2}))?\b", re.IGNORECASE).search(raw, future.start())
+    if not at or int(at.group(1)) > 23 or int(at.group(2) or 0) > 59:
+        return None
+    tomorrow = bool(re.search(r"\bi\s+morgen\b", raw, re.IGNORECASE))
+    return int(tomorrow), int(at.group(1)), int(at.group(2) or 0)
+
+
+def _plan(sig: Signal, planned: Tuple[int, int, int], future: re.Match) -> None:
+    sig.at_time = planned
+    days, hour, minute = planned
+    sig.notes.insert(0, f"planned ('{future.group(0).strip()}'): buys at {hour:02d}:{minute:02d} "
+                        f"Norwegian time{' tomorrow' if days else ''}")
 
 
 _SOLD_GAP = re.compile(r"[ \t]+(?:(?:min|mine|hele|denne|den|å|alt)[ \t]+)*$", re.IGNORECASE)
@@ -694,14 +716,17 @@ def _parse(raw: str, lower: str, other_platform: bool) -> List[Signal]:
         return out + [Signal("info", symbol=(h.symbols or [None])[0], side=h.side, notes=[
             f"status update: he is already {h.side} {', '.join(h.symbols)}, not a new buy"] + notes)]
     future = FUTURE_ENTRY.search(raw)
+    planned = _planned_time(raw, future)
     count = sum(len(h.symbols) or 1 for h in heads)
     for h in heads:
         for sym in h.symbols or [None]:
             sig = _open_details(Signal("open", symbol=sym, side=h.side, add=h.add), raw, lower)
             what = f"{sym or 'his position'} {h.side}"
-            if future:
+            if future and not planned:
                 sig = Signal("info", symbol=sym, side=h.side, notes=[
                     f"plan for later ('{future.group(0).strip()}'): not bought now"])
+            elif planned:
+                _plan(sig, planned, future)
             elif not (_has_trade_details(sig, raw, h.end) or h.verb or h.add):
                 why = "looks like a joke/meme (😂, haha)" if JOKE.search(lower) else "chat, not a call"
                 sig = Signal("info", symbol=sym, side=h.side, notes=[
@@ -722,8 +747,12 @@ def _parse(raw: str, lower: str, other_platform: bool) -> List[Signal]:
         return moves
     prose = _prose_call(raw, lower)
     if prose:
-        return [Signal("info", symbol=prose.symbol, side=prose.side, notes=[
-            f"plan for later ('{future.group(0).strip()}'): not bought now"])] if future else [prose]
+        if future and not planned:
+            return [Signal("info", symbol=prose.symbol, side=prose.side, notes=[
+                f"plan for later ('{future.group(0).strip()}'): not bought now"])]
+        if planned:
+            _plan(prose, planned, future)
+        return [prose]
 
     # Classic labelled signal (entry/SL/TP) without a headline.
     stop_m = _first(STOP_LEVEL, raw)
