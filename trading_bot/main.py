@@ -245,12 +245,12 @@ def _print_copy_report(result) -> None:
     print("Paper only: no real orders. Past results do not guarantee future returns.")
 
 
-def _write_copy_review(result, path: Path) -> int:
+def _write_copy_review(result, path: Path, everything: bool = False) -> int:
     """Every post of his with what the bot understood and did, for someone to check."""
     lines = []
     for o in result.posts:
         post, sig = o.post, o.signal
-        if not post.text.strip() or (post.sell_only and sig.action == "info"):
+        if not everything and (not post.text.strip() or (post.sell_only and sig.action == "info")):
             continue   # bare images, and chat in the discussion topics
         lines.append(f"--- {post.time:%Y-%m-%d %H:%M} UTC · message {post.message_id}"
                      f"{' · reply to ' + str(post.reply_to) if post.reply_to else ''}"
@@ -362,7 +362,7 @@ def cmd_copy(args: argparse.Namespace) -> int:
         result = replay(posts, feed.candles, config, max_leverage=feed.max_leverage,
                         snapshot=feed_snapshot(feed, load_snapshots()))
         path = Path(__file__).resolve().parents[1] / "review.txt"
-        _write_copy_review(result, path)
+        _write_copy_review(result, path, args.all)
         print(f"Wrote {path}\nIt stays on this computer (never uploaded to GitHub). "
               "Drag it into the Claude chat to have every post checked.")
         return 0
@@ -443,7 +443,8 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("text", nargs="+")
     rp = csub.add_parser("report", help="the live paper account (or --history: test on old posts)")
     rp.add_argument("--history", action="store_true", help="test on all his stored posts instead")
-    csub.add_parser("review", help="write review.txt: every post, what the bot understood and did")
+    rv = csub.add_parser("review", help="write review.txt: every post, what the bot understood and did")
+    rv.add_argument("--all", action="store_true", help="also chat in the discussion topics and bare pictures")
     csub.add_parser("reset-live", help="restart the live paper account from now")
 
     return p
