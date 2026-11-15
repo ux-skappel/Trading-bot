@@ -502,6 +502,8 @@ class CopyEngine:
     def _targets_for(self, post: Post, sig: Signal, statuses: Tuple[str, ...]) -> Tuple[List[CopyTrade], str]:
         matches = [t for t in self.trades if t.status in statuses]
         cards = image_cards(post.image_text)
+        if not cards and post.image_text and "sizeprop" in post.image_text.lower():
+            return [], "sizeprop"   # "Solgt alt nå" with his SizeProp screen: not a Liquid trade
         replied = self._linked_trades(post)
         if replied is not None:
             linked = [t for t in replied if t.status in statuses]
@@ -647,6 +649,8 @@ class CopyEngine:
                 return f"ignored: he sold his {sig.leverage:g}x position; the copied one(s) are {levs}"
         if how.startswith("card: "):
             return f"ignored: his trade card shows {how[6:]}, not a position the bot copied"
+        if how == "sizeprop":
+            return "ignored: his picture is from his SizeProp account, not Liquid"
         if how.startswith("several: "):
             return f"ignored: his picture names several open positions ({how[9:]}), not guessing"
         if how.startswith("chart: "):
@@ -736,7 +740,11 @@ class CopyEngine:
                 return why
         planned = next((t for t in self.trades if t.start_at and t.symbol == sig.symbol and t.side == sig.side
                         and t.status in ("scheduled", "open") and abs(t.start_at - post.time) < timedelta(hours=6)), None)
-        if planned and not sig.add:   # he posts the same call again right before his planned entry
+        replaces = None
+        if planned and not sig.add and planned.status == "scheduled" and post.time < planned.start_at:
+            replaces = planned   # he calls it again before his planned time: he is in now, so buy now
+            planned.status = "cancelled"
+        elif planned and not sig.add:   # he posts the same call again right after his planned entry
             self._link(post.message_id, planned)
             return (f"same call as #{planned.number} (planned for {_oslo(planned.start_at):%H:%M} Norwegian time): "
                     "not bought twice")
@@ -755,6 +763,9 @@ class CopyEngine:
                 trade.leverage = market_max
         self.trades.append(trade)
         self._link(post.message_id, trade)
+        if replaces:
+            replaces.note = f"he called it again before the planned time: bought then as #{number}"
+            self._link(replaces.message_id, trade)   # his sells may reply to the plan post
         if not self._load(sig.symbol, post.time):
             trade.status, trade.note = "skipped", f"no price data for {sig.symbol}"
             return f"#{number} skipped: no price data for {sig.symbol}"

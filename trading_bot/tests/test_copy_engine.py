@@ -560,19 +560,29 @@ def test_optional_size_by_risk_at_his_stop():
     assert t.margin == pytest.approx(2_500) and "capped at 25% margin" in t.note
 
 
-def test_planned_call_buys_at_his_clock_time_and_a_repost_is_not_bought_twice():
+def test_planned_call_buys_at_his_clock_time():
     # Winter: Norwegian time is UTC+1, so "kl 14:00" is 13:00 UTC.
     data = hours([(100, 101, 99, 100), (100, 102, 99.5, 101), (105, 106, 104, 105.5), (106, 109, 105, 108),
                   (108, 110, 107, 109)], symbol="META")
     posts = [Post(1, T0 + timedelta(minutes=5), "META LONG 🔼 Bruker 10X giring kl 14:00, ingen SL"),
-             Post(2, T0 + timedelta(minutes=55), "META LONG 🔼 Bruker 10X giring"),        # same call again
              Post(3, T0 + timedelta(hours=3, minutes=30), "SOLGT HELE NÅ", reply_to=1)]
     r = replay(posts, source(data), FREE, now=T0 + timedelta(hours=5))
-    assert len(r.trades) == 1
     t = r.trades[0]
     assert t.entry_time == T0 + timedelta(hours=1) and t.entry_price == 100     # the 13:00 UTC open
-    assert "not bought twice" in r.posts[1].outcome
     assert t.status == "closed" and t.fills[-1].reason == "his close"
+
+
+def test_calling_a_planned_trade_again_early_buys_once_at_that_moment():
+    data = hours([(100, 101, 99, 100), (100, 102, 99.5, 101), (105, 106, 104, 105.5), (106, 109, 105, 108)],
+                 symbol="META")
+    posts = [Post(1, T0 + timedelta(minutes=5), "META LONG 🔼 Bruker 10X giring kl 15:00, ingen SL"),
+             Post(2, T0 + timedelta(minutes=55), "META LONG 🔼 Bruker 20X giring og SL på $95"),
+             Post(3, T0 + timedelta(hours=2, minutes=30), "SOLGT HELE NÅ", reply_to=1)]
+    r = replay(posts, source(data), FREE, now=T0 + timedelta(hours=4))
+    plan, bought = r.trades
+    assert plan.status == "cancelled" and plan.entry_price is None
+    assert bought.entry_time == T0 + timedelta(hours=1) and bought.leverage == 20 and bought.stop == 95
+    assert bought.status == "closed" and bought.fills[-1].reason == "his close"   # the sell replied to the plan
 
 
 def test_planned_call_is_cancelled_when_he_sells_before_it():
@@ -591,3 +601,12 @@ def test_planned_call_bought_and_sold_inside_one_hour():
                   image_text="• Liquid | META | PERP 10x LONG | CURRENT RETURN | +40% | ENTRY | $100,50 | MARK | $104,50")]
     t = replay(posts, source(data), FREE, now=T0 + timedelta(hours=3)).trades[0]
     assert t.status == "closed" and t.entry_price == 100.5 and t.fills[-1].price == 104.5
+
+
+def test_a_sell_with_his_sizeprop_screen_closes_nothing():
+    data = minutes([0.071, 0.071, 0.070, 0.069], symbol="DOGE")
+    posts = [post(0, "DOGE SHORT 🔽 Bruker 10X giring og SL på $0,0725", mid=500),
+             Post(501, T0 + timedelta(minutes=2), "Solgt alt nå 🔽",
+                  image_text="• SizeProp | SOLUSDT | SHORT 2X | +$11,000 | POSITION SIZE | $250,000")]
+    r = replay(posts, source(data), FREE)
+    assert r.trades[0].status == "open" and "SizeProp" in r.posts[-1].outcome

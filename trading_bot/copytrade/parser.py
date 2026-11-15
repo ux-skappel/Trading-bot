@@ -31,6 +31,12 @@ KNOWN_COINS = {
     "DYDX", "GMX", "PENDLE", "EIGEN", "ZRO", "STRK", "BLUR", "JTO", "BOME",
 }
 # Lower-case mentions only count for coins that aren't also ordinary words.
+# Stock tickers he trades on Liquid, recognised when written in capitals inside a sentence.
+KNOWN_STOCKS = {
+    "TSLA", "NVDA", "AMD", "PLTR", "SPCX", "MU", "SNDK", "AMZN", "GOOGL", "META", "MSFT", "AAPL", "COIN",
+    "MSTR", "RDDT", "INTC", "SOFI", "GLW", "IREN", "RKLB", "ASML", "DELL", "AVGO", "ORCL", "COST", "NFLX",
+    "WDC", "STX", "CRCL", "HIMS", "GME", "HOOD", "SP500", "XYZ100", "GOLD", "SILVER",
+}
 SAFE_LOWER = {
     "btc", "eth", "sol", "xrp", "doge", "ada", "avax", "bnb", "ltc", "pepe", "wif", "bonk",
     "sui", "arb", "inj", "tia", "sei", "atom", "aave", "matic", "shib", "trx", "kas", "ena",
@@ -225,7 +231,7 @@ def _known_symbol(text: str) -> Optional[str]:
         up = token.upper()
         if up in NAMES and token[0].isupper():
             return NAMES[up]
-        if (token.isupper() and up in KNOWN_COINS) or token in SAFE_LOWER:
+        if (token.isupper() and (up in KNOWN_COINS or up in KNOWN_STOCKS)) or token in SAFE_LOWER:
             return up
     return None
 
@@ -254,7 +260,7 @@ SIDE_WORD = re.compile(r"\b(long(?:er|et|e)?|short(?:er|et|e)?|kjøper|buy(?:ing
 _ADD = re.compile(r"[ \t]+(?:(?:en\s+god\s+del|mye|litt|enda)\s+)?(?:mer|more)\b", re.IGNORECASE)
 _NEXT_TOKEN = re.compile(r"[ \t]*([$#]?[\w&.]+)")
 _JOIN_AFTER = re.compile(r"[ \t]+(?:og|and|&|\+)[ \t]+", re.IGNORECASE)
-_LAST_TOKEN = re.compile(r"([$#]?[\w&.]+)[ \t]+$")
+_LAST_TOKEN = re.compile(r"([$#]?[\w&.]+)[ \t]*$")
 _JOIN_BEFORE = re.compile(r"(?:^|[ \t])(?:og|and|&|\+)[ \t]+$", re.IGNORECASE)
 CALL_VERB = re.compile(r"\b(?:velger|går|gå|kjører|tar|åpner|åpnet)\b", re.IGNORECASE)
 HEDGE = re.compile(r"\b(?:tenker|vurderer|kanskje|tror|kan|skal|om|hvis|planlegger|fristende|kommer\s+til\s+å)\b",
@@ -362,19 +368,19 @@ IF_BEFORE = re.compile(r"\b(?:om|hvis|dersom|if|unless|evt|eventuelt|kanskje|tro
                        r"kommer\s+til\s+å|planlegger)\b", re.IGNORECASE)
 IF_AFTER = re.compile(r"[^.!?\n…]{0,25}?\b(?:når|om|hvis|dersom|if|when|once)\s+"
                       r"(?:vi|den|prisen|kursen|it|price|we|\$?\d)", re.IGNORECASE)
-LATER = re.compile(r"[ \t]+(?:\w+[ \t]+){0,2}?(?:nok|evt|kanskje|i\s+dag\s+før|ikveld|i\s+kveld|i\s+morgen|"
+LATER = re.compile(r"[ \t]+(?:\w+[ \t]+){0,2}?(?:når|nok|evt|kanskje|i\s+dag\s+før|ikveld|i\s+kveld|i\s+morgen|"
                    r"før\s+(?:kl|jeg|leggetid)|etter\s+(?:noen|kl)|(?:ved|på|at|@)\s*\$?\d)", re.IGNORECASE)
 PAST_CLOSE = re.compile(r"solgt\w*|sold|stengt|lukket|exited|closed", re.IGNORECASE)
 # "for øyeblikket er jeg long X" / "fortsatt long" / "er long X": already in it.
-STATUS = re.compile(r"\b(?:for\s+øyeblikket|per\s+nå|fortsatt|fremdeles|still|currently|sitter|er)\s+"
+STATUS = re.compile(r"\b(?:for\s+øyeblikket|per\s+nå|fortsatt|fremdeles|ennå|still|currently|sitter|er)\s+"
                     r"(?:\w+\s+){0,3}?(?:long|short)\b")
 # "bruker 10X giring kl HH:MM", "går inn kl HH:MM", "går short nøyaktig kl HH": later.
 FUTURE_ENTRY = re.compile(
-    r"\b(?:går\s+inn|g[åa]r?\s+(?:long|short)|longer|shorter|kjøper|bruker\s+\d{1,3}\s*x(?:\s+giring)?)"
+    r"\b(?:går\s+(?:inn|i)|g[åa]r?\s+(?:long|short)|longer|shorter|kjøper|kjører|bruker\s+\d{1,3}\s*x(?:\s+giring)?)"
     r"[^.\n(]{0,25}?\b(?:kl\.?\s*\d{1,2}[:.]\d{2}|i\s+morgen)\b|\bnøyaktig\s+kl\b"
     r"|\b(?:kl\.?\s*\d{1,2}[:.]\d{2}|i\s+morgen)\b[^.\n(]{0,25}?\b(?:går\s+inn|longer|shorter)\b", re.IGNORECASE)
 # SizeProp/prop-firm accounts are not Liquid: those clauses are left out.
-OTHER_PLATFORM = re.compile(r"\bsize\s*prop\w*|\bprop(?:pen|firm\w*)?\b|\bpå\s+size\b|\bstonkex\b|\bpå\s+fomo\b",
+OTHER_PLATFORM = re.compile(r"\bsize\s*prop\w*|\bprop(?:pen|firm\w*)?\b|\bpå\s+size\b|\bstonkex\b|\bpå\s+fomo\b|\bnordnet\b",
                             re.IGNORECASE)
 
 
@@ -581,7 +587,7 @@ def _all_symbols(text: str) -> List[str]:
         up = token.upper()
         if up in NAMES and token[0].isupper():
             found.append(NAMES[up])
-        elif (token.isupper() and up in KNOWN_COINS) or token in SAFE_LOWER:
+        elif (token.isupper() and (up in KNOWN_COINS or up in KNOWN_STOCKS)) or token in SAFE_LOWER:
             found.append(up)
     first = text.strip().split("\n")[0].strip()
     if re.fullmatch(r"[$#]?[A-Z][A-Z0-9&]{1,9}", first):   # "NETFLIX" alone on the first line
@@ -589,14 +595,39 @@ def _all_symbols(text: str) -> List[str]:
     return [s for s in dict.fromkeys(found) if s]
 
 
-PROSE_SIDE = re.compile(r"\b(?:gå|går|kjører|tar|velger)\s+(?:å\s+)?(?:gå\s+)?(long|short)\b", re.IGNORECASE)
+PROSE_SIDE = re.compile(r"\b(?:gå|går|kjører|tar|velger)\s+(?:å\s+)?(?:gå\s+)?(?:\d{1,3}\s*x\s+)?(long|short)\b",
+                        re.IGNORECASE)
 LEVERAGE = re.compile(r"\b\d{1,3}(?:[.,]\d)?\s*x\b", re.IGNORECASE)
 
 
-def _prose_call(raw: str, lower: str) -> Optional[Signal]:
+def _line_calls(raw: str) -> List[Signal]:
+    """'Tror Google ned 🔽' / 'Tror Microsoft opp 🔼' on lines of their own, leverage elsewhere in the post."""
+    if not LEVERAGE.search(raw):
+        return []
+    calls = []
+    for line in raw.split("\n"):
+        symbols = _all_symbols(line)
+        ups, downs = sum(line.count(c) for c in "🔼📈"), sum(line.count(c) for c in "🔽📉")
+        low = line.lower()
+        if len(symbols) != 1:
+            continue
+        if (ups and not downs) or (re.search(r"\bopp\b", low) and not downs):
+            side = "long"
+        elif (downs and not ups) or (re.search(r"\bned\b", low) and not ups):
+            side = "short"
+        else:
+            continue
+        sig = _open_details(Signal("open", symbol=symbols[0], side=side), raw, raw.lower())
+        sig.stop_loss, sig.take_profits = None, []   # a post-wide stop can't belong to every line
+        sig.notes.insert(0, f"call on its own line: {side} {symbols[0]}")
+        calls.append(sig)
+    return calls if len(calls) > 1 else []
+
+
+def _prose_call(raw: str, lower: str) -> List[Signal]:
     """'Rapport for <company> … velger å gå long med 10X giring' / '<COMPANY> … opp 🔼 … 10X giring'."""
     if not LEVERAGE.search(raw):
-        return None
+        return []
     m = PROSE_SIDE.search(raw)
     ups, downs = sum(raw.count(c) for c in "🔼📈"), sum(raw.count(c) for c in "🔽📉")
     if m:
@@ -606,13 +637,16 @@ def _prose_call(raw: str, lower: str) -> Optional[Signal]:
     elif downs and not ups and re.search(r"\b(?:ned|down|dump\w*|bruker\s+\d{1,3}\s*x)\b", lower):
         side = "short"
     else:
-        return None
+        return []
     symbols = _all_symbols(raw)
-    if len(symbols) != 1:
-        return None
-    sig = _open_details(Signal("open", symbol=symbols[0], side=side), raw, lower)
-    sig.notes.insert(0, f"call written out in words: {side} {symbols[0]}")
-    return sig
+    if not 1 <= len(symbols) <= 3:
+        return []
+    out = []
+    for symbol in symbols:   # "SOFI og GLW … Kjører short og 10X giring"
+        sig = _open_details(Signal("open", symbol=symbol, side=side), raw, lower)
+        sig.notes.insert(0, f"call written out in words: {side} {symbol}")
+        out.append(sig)
+    return out
 
 
 def _moves(raw: str, lower: str) -> List[Signal]:
@@ -709,7 +743,10 @@ def _parse(raw: str, lower: str, other_platform: bool) -> List[Signal]:
     if close and (not heads or close.start() < heads[0].start):
         out.append(_close_signal(raw, lower, close, sold[0].symbols[0] if sold else None))
 
-    if heads and STATUS.search(lower):   # "For øyeblikket long HOOD" = already in it
+    status = STATUS.search(lower)
+    if status and re.search(r"\b(?:dere|du)\b", lower[max(0, status.start() - 30):status.end()]):
+        status = None   # "om dere ikke allerede er long": advice to the members, not his status
+    if heads and status:   # "For øyeblikket long HOOD" = already in it
         if close and not out:            # "..., men SOLGT NVIDIA"
             out.append(_close_signal(raw, lower, close))
         h = heads[0]
@@ -718,9 +755,18 @@ def _parse(raw: str, lower: str, other_platform: bool) -> List[Signal]:
     future = FUTURE_ENTRY.search(raw)
     planned = _planned_time(raw, future)
     count = sum(len(h.symbols) or 1 for h in heads)
+    per_line = len({raw.rfind("\n", 0, h.start) for h in heads}) > 1   # "Long Amazon SL $242\nShort Intel"
     for h in heads:
         for sym in h.symbols or [None]:
             sig = _open_details(Signal("open", symbol=sym, side=h.side, add=h.add), raw, lower)
+            if per_line:   # each line's own stop/levels; leverage from its line or the post
+                start = raw.rfind("\n", 0, h.start) + 1
+                end = raw.find("\n", h.start)
+                line = raw[start:end if end >= 0 else len(raw)]
+                own = _open_details(Signal("open", symbol=sym, side=h.side), line, line.lower())
+                sig.stop_loss, sig.take_profits = own.stop_loss, own.take_profits
+                sig.entry_low, sig.entry_high, sig.market = own.entry_low, own.entry_high, own.market
+                sig.leverage = own.leverage or sig.leverage
             what = f"{sym or 'his position'} {h.side}"
             if future and not planned:
                 sig = Signal("info", symbol=sym, side=h.side, notes=[
@@ -745,19 +791,22 @@ def _parse(raw: str, lower: str, other_platform: bool) -> List[Signal]:
         return [Signal("info", symbol=_known_symbol(raw), notes=notes)]
     if moves:
         return moves
-    prose = _prose_call(raw, lower)
+    prose = [] if other_platform else (_line_calls(raw) or _prose_call(raw, lower))
     if prose:
         if future and not planned:
-            return [Signal("info", symbol=prose.symbol, side=prose.side, notes=[
-                f"plan for later ('{future.group(0).strip()}'): not bought now"])]
-        if planned:
-            _plan(prose, planned, future)
-        return [prose]
+            return [Signal("info", symbol=p.symbol, side=p.side, notes=[
+                f"plan for later ('{future.group(0).strip()}'): not bought now"]) for p in prose]
+        for p in prose:
+            if planned:
+                _plan(p, planned, future)
+            if len(prose) > 1:
+                p.notes.append(f"one of {len(prose)} trades in the same post")
+        return prose
 
-    # Classic labelled signal (entry/SL/TP) without a headline.
+    # Classic labelled signal (entry/SL/TP) without a headline; never in a post about another platform.
     stop_m = _first(STOP_LEVEL, raw)
     has_levels = bool(_first(r"\b(?:entry|inngang)\b", raw) or _take_profits(raw))
-    if stop_m or has_levels:
+    if (stop_m or has_levels) and not other_platform:
         side, symbol = _side(lower, True), _symbol(raw)
         if side and symbol:
             return [_open_details(Signal("open", symbol=symbol, side=side), raw, lower)]

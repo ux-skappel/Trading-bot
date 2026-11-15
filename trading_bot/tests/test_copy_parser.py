@@ -415,3 +415,49 @@ def test_sell_names_his_leverage():
 
 def test_leverage_is_never_a_ticker():
     assert [s.symbol for s in parse_signals("HYPE LONG 🔼\n\nBruker 10X long og ingen SL")] == ["HYPE"]
+
+
+# --- Lessons from his posts in November (paraphrased examples) ----------------------------
+
+def test_two_tickers_and_a_written_out_short():
+    sigs = parse_signals("SOFI og GLW tall i morgen tidlig\n\nKjører short og 10X giring, ingen SL. Risky 🔽")
+    assert [(s.symbol, s.side, s.leverage) for s in sigs] == [("SOFI", "short", 10), ("GLW", "short", 10)]
+
+
+def test_leverage_between_verb_and_side():
+    s = parse_signal("AMD rapport 💥\n\nKjører 15X short nå. Ingen SL")
+    assert (s.action, s.symbol, s.side, s.leverage) == ("open", "AMD", "short", 15)
+
+
+def test_ticker_in_capitals_inside_a_sentence():
+    s = parse_signal("Tall etter kl 21\n\nBruker 10X giring\n\nTror HOOD holder support her 🔼")
+    assert (s.action, s.symbol, s.side) == ("open", "HOOD", "long")
+
+
+def test_one_call_per_line_with_arrows():
+    sigs = parse_signals("Tall for Google og Microsoft i kveld\n\nTror Google ned 🔽\nTror Microsoft opp 🔼\n\nBruker 20X giring")
+    assert [(s.symbol, s.side) for s in sigs] == [("GOOGL", "short"), ("MSFT", "long")]
+
+
+def test_each_line_keeps_its_own_stop():
+    sigs = parse_signals("Kjører disse kl 21:58:\n\nLong Amazon SL $240 20X giring 🔼\nShort Intel 🔽\n\nBruker 20X giring")
+    assert [(s.symbol, s.stop_loss, s.at_time) for s in sigs] == [("AMZN", 240, (0, 21, 58)), ("INTC", None, (0, 21, 58))]
+
+
+def test_symbols_before_side_joined_with_plus():
+    assert [s.symbol for s in parse_signals("SOL + XRP SHORT 🔽\n\nShorter begge med 20X")] == ["SOL", "XRP"]
+
+
+def test_still_long_and_advice_to_members():
+    assert parse_signal("Ennå long HOOD 🔼\n\nIngen SL").action == "info"
+    s = parse_signal("HOOD LONG 🔼\n\nOm dere ikke allerede er long, fin entry nå!\n\nFeks 10X giring og SL på $75")
+    assert (s.action, s.symbol, s.leverage) == ("open", "HOOD", 10)
+
+
+@pytest.mark.parametrize("text", ["Selger bnb short når btc er rundt 72k", "Selger når jeg er fornøyd"])
+def test_selling_when_something_happens_is_a_plan(text):
+    assert parse_signal(text).action == "info"
+
+
+def test_other_broker_posts_are_not_trades():
+    assert parse_signal("Nytt kjøp på Nordnet 🔼\n\nNådd mitt mål for Tesla-aksjer, sparer videre til 2027").action == "info"
